@@ -1322,6 +1322,16 @@ function F:act(action,button)
     end
     return
   end
+  if action:match('^fluid%-scale:') then
+    local f=self:fluidField(self.fluidIndex,self.fluidKey)
+    if f and (self.fluidKey=='low' or self.fluidKey=='high') then
+      if not self:commit() then return end
+      local value=math.floor(f.get()*tonumber(action:match(':(.+)$')))
+      if not self.save.U.integer(value,f.lo,f.hi) then self.message='结果须为 '..f.lo..' 至 '..f.hi..' 的整数'; return end
+      f.set(value); self:changed()
+    end
+    return
+  end
   if not self:commit() then return end; local o=self:object()
   if action:match('^tab:') then self:openTab(tonumber(action:sub(5)))
   elseif action:match('^select:') then self.pos=tonumber(action:sub(8)); self.offset=1; self.selected={}; self.boxPage=1; self.popup=nil
@@ -1475,8 +1485,12 @@ function F:drawFluids(x,width,b)
     ui:control('fluid:'..self.fluidIndex..':'..self.fluidKey,x+labelWidth,editTop+2,
       editing and self.edit.text..'_' or self:value(f),editing,width-labelWidth)
     if self.fluidKey=='low' or self.fluidKey=='high' then
+      local step=width>=72 and 8 or 6
       for i,preset in ipairs({{'1M',1e6},{'10M',1e7},{'100M',1e8},{'1G',1e9},{'10G',1e10}}) do
-        ui:control('fluid-preset:'..ui.exact(preset[2]),x+(i-1)*8,editTop+3,preset[1],false,7)
+        ui:control('fluid-preset:'..ui.exact(preset[2]),x+(i-1)*step,editTop+3,preset[1],false,step-1)
+      end
+      for i,scale in ipairs({{'÷2',0.5},{'÷5',0.2},{'×2',2},{'×5',5}}) do
+        ui:control('fluid-scale:'..scale[2],x+(i+4)*step,editTop+3,scale[1],false,step-1)
       end
     end
     if editing then
