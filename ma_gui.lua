@@ -118,10 +118,11 @@ function G:choices(f,cfg,devices)
   return rows
 end
 function G:edit(cfg,component,save) return self.Editor.new(self,cfg,component,save):run() end
-local phases={load='元件投料',admit='节点取料',wait='等待凝聚物或蜂群',run='加工',['return']='回收蜂群'}
+local phases={load='元件投料',admit='节点取料',wait='等待凝聚物或蜂群',run='加工',group_wait='等待同子网阵列',['return']='回收蜂群'}
 local function phase(b,s)
   if s and s.bee then return (s.bee.loading and '装载 T' or '回收 T')..s.bee.tier..' 蜂群' end
   if s and s.request then return (s.request.supply and '等待补充 T' or '等待 T')..s.request.tier..' 蜂群' end
+  if b.phase=='group_wait' then return phases.group_wait end
   if b.yielding then return '等待当前加工完成' end
   if b.phase=='wait' and not b.granted then return '等待凝聚物' end
   return phases[b.phase]
@@ -152,6 +153,7 @@ function G:runtime(e,refill)
   local total,active,done=0,0,0
   for _,n in pairs(e.stock or {}) do total=total+n end
   for _,a in ipairs(e.arrays) do local s=e.s.arrays[a.address]; if s then done=done+(s.done or 0); if s.batch then active=active+1 end end end
+  for _,n in pairs(e.s.groupDone or {}) do done=done+n end
   self:put(2,2,e.stopping and '正在完成已接订单并回收蜂群；可按 Ctrl+C 立即暂停' or e.s.recovering and '接管现有任务 / 暂停接单' or e.ready and '独立调度 / 共享预缓存' or '等待约束场完成当前周期',w-3,ink.green)
   self:put(2,3,'阵列 '..active..' / '..#e.arrays..'  |  排队 '..#e.s.queue..'  |  纠缠装置 '..#e.cfg.generators..'  |  已完成 '..exact(done)..' 份',w-3)
   self:put(2,4,'库存 '..amount(e.stock and total)..' / '..amount(e.cfg.fieldLimit)..' L',w-3,ink.cyan)
@@ -193,7 +195,7 @@ function G:runtime(e,refill)
       local s=e.s.arrays[r.address]; local b=s and s.batch
       local label=e.errors[r.address] and '已暂停' or b and phase(b,s) or e.status[r.address] or '空闲'
       self:put(2,y,prefix..self:recordName(e.cfg,'arrays',r),19,ink.cyan,bg)
-      self:put(22,y,label..(b and ' ×'..b.count..' '..e.s.patterns[b.key].pattern.label or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
+      self:put(22,y,label..(b and (b.group and ' 子网共 ' or ' ×')..b.count..' '..e.s.patterns[b.key].pattern.label or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
     else self:put(2,y,prefix..r.label..'  '..(r.error and '已暂停' or r.status),left,r.error and ink.red or ink.text,bg) end
   end
   self:put(2,h-8,string.format('%d / %d  第 %d/%d 页',#list>0 and selected or 0,#list,page+1,math.max(1,math.ceil(#list/self.perPage))),left,ink.dim)
@@ -238,7 +240,7 @@ function G:arrayPanel(e,x,top,width,bottom)
   local s=e.s.arrays[a.address]; local b=s and s.batch
   self:put(x,top,self:recordName(e.cfg,'arrays',a)..'  '..a.address:sub(1,12),width,ink.cyan)
   self:button('array-',x,top+1,'上一台'); self:button('array+',x+10,top+1,'下一台')
-  self:put(x,top+3,e.errors[a.address] and '已暂停 / 暂停前进度' or b and phase(b,s)..' ×'..b.count or e.status[a.address] or '等待 AE 下单',width,e.errors[a.address] and ink.red or ink.green)
+  self:put(x,top+3,e.errors[a.address] and '已暂停 / 暂停前进度' or b and phase(b,s)..(b.group and ' 子网共 ' or ' ×')..b.count or e.status[a.address] or '等待 AE 下单',width,e.errors[a.address] and ink.red or ink.green)
   self:put(x,top+4,s and s.bee and '蜂群 T'..s.bee.tier..(s.bee.loading and ' 装载中' or ' 回收中') or '节点 / 并行 / 所需蜂群 / 进度',width,ink.dim)
   local observed=(e.observations or {})[a.address]; local views=observed or {}; local per=math.max(1,math.floor((bottom-top-7)/2))
   self.nodePages=math.max(1,math.ceil(#a.nodes/per)); self.nodePage=math.max(1,math.min(self.nodePage,self.nodePages))

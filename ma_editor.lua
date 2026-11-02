@@ -204,7 +204,7 @@ function F:form(fluidIndex)
             end
           end,spec[4])
       end
-      if i<count then field('中转槽位',r.steps[i],'slot','number',nil,1,2147483647) end
+      if i<count then field('中转槽位',r.steps[i],'slot','number',nil,1,2147483647).inventory=function() return self:inventory(r.steps[i].to) end end
     end
     action('增加中转步骤',function()
       local rr=get(true); local last=rr.steps[#rr.steps]; local mid=self:newInventory('中转容器')
@@ -243,7 +243,7 @@ function F:form(fluidIndex)
           inv.transposer,inv.side=step.transposer,v; step.from,step.fromSide=inv.id,v
           self:removeUnusedInventory(old)
         end)
-        field('元件槽位',cell,'slot','number',nil,1,10)
+        field('元件槽位',cell,'slot','number',nil,1,10).inventory=function() return self:inventory(r.steps[1].from) end
       end
     end
   elseif o.kind=='generators' then
@@ -347,7 +347,7 @@ function F:form(fluidIndex)
     virtual('接收驱动器方向','side',function() local inv=self:receiver(x); return inv and inv.side or 0 end,
       function(v) local inv=self:receiver(x,true); self:position(inv,inv.transposer,v) end)
     virtual('接收元件槽位','number',function() local r=self:route(x.route); return r and r.sourceSlot or x.receiverSlot or 1 end,
-      function(v) local r=self:route(x.route); if r then r.sourceSlot=v else x.receiverSlot=v end end,nil,1,2147483647)
+      function(v) local r=self:route(x.route); if r then r.sourceSlot=v else x.receiverSlot=v end end,nil,1,2147483647).inventory=function() return self:receiver(x) end
     local receiver,origin=self:receiver(x),self:origin(x)
     if receiver and origin and receiver.id~=origin.id then title('队列箱接收搬运'); routeRows(function() return self:route(x.route) end,'接收搬运')
     end
@@ -423,8 +423,18 @@ function F:commit()
   if f.kind=='number' then v=tonumber(v); if not self.save.U.integer(v,f.lo,f.hi) then self.message='请输入 '..f.lo..' 至 '..f.hi..' 的整数'; return false end end
   f.set(v); self.edit=nil; self:changed(); return true
 end
-function F:activate(f)
-  if f.kind=='action' then f.run(); self:changed()
+function F:activate(f,button)
+  if button~=nil and (f.kind=='side' or f.inventory) then
+    local lo,hi=0,5
+    if f.inventory then
+      local inv=f.inventory()
+      if not inv or inv.transposer=='' then self.message='请先选择转运器和容器方向'; return end
+      local ok,size=pcall(function() return self.component.proxy(inv.transposer).getInventorySize(inv.side) end)
+      if not ok or not size or size<1 then self.message='所选方向未读取到容器，请检查转运器和方向'; return end
+      lo,hi=1,size
+    end
+    f.set(lo+((f.get() or lo)-lo+(button==1 and -1 or 1))%(hi-lo+1)); self:changed()
+  elseif f.kind=='action' then f.run(); self:changed()
   elseif f.kind=='boolean' then f.set(not f.get()); self:changed()
   elseif f.kind=='choice' or f.kind=='side' then
     local options=f.kind=='side' and {} or self:choices(f)
@@ -432,7 +442,7 @@ function F:activate(f)
     self.popup={title=f.label,options=options,page=1,current=f.get(),reopen=function() self:activate(f) end,choose=function(v) f.set(v) end}
   elseif f.kind~='heading' and f.kind~='presets' then self:begin(f) end
 end
-function F:act(action)
+function F:act(action,button)
   if not action then return end
   if action=='quit' then self.edit=nil; self.done=true; return end
   if action=='back' then if self.edit then self.edit=nil elseif self.popup then self.popup=nil else self.done=true end; return end
@@ -447,11 +457,11 @@ function F:act(action)
   if not self:commit() then return end; local o=self:object()
   if action:match('^tab:') then self:openTab(tonumber(action:sub(5)))
   elseif action:match('^select:') then self.pos=tonumber(action:sub(8)); self.offset=1; self.selected={}; self.boxPage=1; self.popup=nil
-  elseif action:match('^field:') then self:activate(self:form()[tonumber(action:sub(7))])
+  elseif action:match('^field:') then self:activate(self:form()[tonumber(action:sub(7))],button)
   elseif action:match('^fluid:') then
     local index,key=action:match('^fluid:(%d+):(%w+)$'); self.fluidIndex,self.fluidKey=tonumber(index),key
     if key~='name' then local f=self:fluidField(self.fluidIndex,key)
-      if f then self:activate(f) else self.message='请先启用该流体的主网供料，再填写驱动器方向和槽位' end
+      if f then self:activate(f,button) else self.message='请先启用该流体的主网供料，再填写驱动器方向和槽位' end
     end
   elseif action:match('^preset:') then
     local index,value=action:match('^preset:(%d+):(.+)$'); self:form()[tonumber(index)].set(tonumber(value)); self:changed()
@@ -504,7 +514,7 @@ function F:act(action)
 end
 function F:event(name,_,ch,code,direction)
   if name=='interrupted' then self:act('quit'); return end
-  if name=='touch' then self:act(self.ui:hit(ch,code)); return end
+  if name=='touch' then self:act(self.ui:hit(ch,code),direction or 0); return end
   if self.edit then local e=self.edit
     if name=='clipboard' then e.text=tostring(ch):gsub('[\r\n]',''); e.replace=false
     elseif name=='key_down' then
@@ -599,7 +609,7 @@ function F:drawFluids(x,width,b)
       ui:put(x+20,editTop+4,'Enter 确认 / Esc 取消',width-20,ink.dim)
     end
   else ui:put(x,editTop+2,'点击表格中的值修改配置',width,ink.dim) end
-  ui:put(x,b.status,'流体 '..first..'–'..math.min(#self.fluidRows,first+per-1)..' / '..#self.fluidRows..'；底部显示完整数值',width,ink.dim)
+  ui:put(x,b.status,'方向/槽位：左键下一项，右键上一项；首尾循环',width,ink.dim)
 end
 function F:draw()
   local ui=self.ui; local ink=ui.ink; ui:begin('BEC / 多观测阵列配置')
@@ -666,7 +676,7 @@ function F:draw()
       end
     end
     if #rows==0 then ui:put(x,6,'请先添加配置，或按 F 刷新设备',width,ink.dim) end
-    ui:put(x,b.status,'字段 '..self.offset..' / '..#rows,width,ink.dim)
+    ui:put(x,b.status,'方向/槽位：左键下一项，右键上一项；首尾循环',width,ink.dim)
   end
   ui:control('prev',x,b.nav,'上一页'); ui:control('next',x+12,b.nav,'下一页'); ui:control('refresh',x+24,b.nav,'F 刷新')
   ui:wrap(2,h-2,self.message,w-3,2,ink.amber)

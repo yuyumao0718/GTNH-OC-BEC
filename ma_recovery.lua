@@ -21,6 +21,13 @@ function R.check(cfg,state,U,proxy,M)
       io='投料 ME-IO 端口',diode='麦克斯韦门',beePool='共享蜂群池'}
     for _,k in ipairs(keys) do same(a[k],b[k],message..' / '..names[k]) end
   end
+  for buffer,g in pairs(state.groups or {}) do
+    active=true
+    for _,id in ipairs(g.members) do
+      local a=after.arrays[id]
+      assert(a and a.enabled and a.buffer==buffer,'共享子网任务未完成，请保留阵列及其原料子网：'..id)
+    end
+  end
   local function firstRoute(config,from,to)
     for _,r in ipairs(config.routes) do if r.steps[1].from==from and r.steps[#r.steps].to==to then return r.id end end
   end
@@ -111,6 +118,10 @@ function R.adopt(e,choose)
   for _,list in pairs(e.catalogs) do for _,p in ipairs(list.patterns) do if not known[p.key] then
     catalog.patterns[#catalog.patterns+1]=p; known[p.key]=true
   end end end
+  local readBuffers,knownBuffers={},{}
+  for _,a in ipairs(e.arrays) do if (arrays[a.address] or {}).batch or e.s.groups[a.buffer] then
+    readBuffers[a.buffer]=true; knownBuffers[a.buffer]=true
+  end end
   for _,a in ipairs(e.arrays) do
     local s=arrays[a.address] or {done=0,counts={}}; arrays[a.address]=s
     if not s.batch then
@@ -131,7 +142,7 @@ function R.adopt(e,choose)
           assert(not e.log:stack(id,slot),'接管前请确认并归还没有搬运记录的元件：'..id..' / 槽 '..slot)
         end end
       end
-      local contents=e:items(a.buffer)
+      local contents=not readBuffers[a.buffer] and e:items(a.buffer) or {}; readBuffers[a.buffer]=true
       if next(contents) then
         local p=assert(e.I.identify(catalog,contents),'投料子网原料尚未到齐，不能接管：'..a.address)
         local total,complete=e.I.receipts(p,contents)
@@ -164,6 +175,32 @@ function R.adopt(e,choose)
       used[a.beePool..':'..selected.box..':'..selected.slot]=true
     end
   end
-  e.s.arrays,e.s.patterns=arrays,patterns; e.s.recovering=true; e.save()
+  local groups=e.U.copy(e.s.groups)
+  for buffer,members in pairs(e.subnets) do if #members>1 and not groups[buffer] and not knownBuffers[buffer] then
+    local g={buffer=buffer,members={},count=0,phase='work',granted=true,continuous=false}
+    local pending
+    for _,a in ipairs(members) do
+      g.members[#g.members+1]=a.address
+      local s=arrays[a.address]; local b=s.batch
+      if b and b.adopted then
+        local meta=patterns[b.key]
+        if g.key then
+          local first=patterns[g.key]
+          assert(e.U.equal(meta.unit,first.unit) and e.U.equal(meta.steps,first.steps),'同一共享子网的活动节点配方不同，不能合并接管')
+        else g.key=b.key; g.leader=a.address end
+        g.count=g.count+b.count; b.key=g.key; b.group=buffer
+      elseif b and b.phase=='load' then
+        pending={key=b.key,count=b.count,leader=a.address}; s.batch=nil
+      end
+      if s.bufferOrder then pending=s.bufferOrder; pending.leader=a.address; s.bufferOrder=nil end
+    end
+    if g.key then g.pending=pending; groups[buffer]=g
+    elseif pending then
+      g.key,g.count,g.leader,g.phase=pending.key,pending.count,pending.leader,'load'; g.granted=false
+      arrays[g.leader].batch={group=buffer,key=g.key,count=g.count,receipts={},cursor=1,workers={},phase='load'}
+      groups[buffer]=g
+    end
+  end end
+  e.s.arrays,e.s.patterns,e.s.groups=arrays,patterns,groups; e.s.recovering=true; e.save()
 end
 return R

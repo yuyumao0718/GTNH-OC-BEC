@@ -122,7 +122,7 @@ function C.validate(cfg,component,U)
     local seen={}; for _,x in ipairs(cfg[section]) do assert(not seen[x.id],"重复名称："..x.id); seen[x.id]=true end
   end
   local nodes,ports,owners,arrays,diodes,buffers={},{},{},{},{},{}
-  local function port(id,owner) assert(inv[id],"未知库存位置："..tostring(id)); assert(not ports[id],"ME-IO 端口重复分配："..id); ports[id]=owner end
+  local function port(id,owner,shared) assert(inv[id],"未知库存位置："..tostring(id)); assert(not ports[id] or shared and ports[id]==owner,"ME-IO 端口重复分配："..id); ports[id]=owner end
   local function own(id,slot,owner)
     local key=id..":"..slot; assert(not owners[key],"元件槽位重复："..key); owners[key]=owner
   end
@@ -148,16 +148,17 @@ function C.validate(cfg,component,U)
     local r=route(c.route); own(r.steps[1].from,r.sourceSlot,c.id)
     assert(#c.patterns>0,'接单通道至少选择一个主网样板接口')
     assert(not buffers[c.buffer],"同一接收子网请配置为一条通道，将主网接口加入该通道的样板接口列表")
-    buffers[c.buffer]=true
+    buffers[c.buffer]='channel'
     for _,p in ipairs(c.patterns) do assert(not patterns[p.address],"样板接口重复分配："..p.address); patterns[p.address]=true end
   end
   for _,a in ipairs(checked.arrays) do
     assert(not arrays[a.address],"观测阵列重复分配"); arrays[a.address]=true
-    assert(not diodes[a.diode] and not buffers[a.buffer],"每台阵列须使用独立的麦克斯韦门和本阵列原料子网 ME 控制器")
-    diodes[a.diode],buffers[a.buffer]=true,true
+    assert(not diodes[a.diode],"每台阵列须使用独立的麦克斯韦门")
+    assert(buffers[a.buffer]~='channel',"阵列原料子网不能与接收子网相同")
+    diodes[a.diode],buffers[a.buffer]=true,'array'
     assert(#a.nodes>=1 and #a.nodes<=16,"每台阵列须选择 1–16 个节点")
     for _,n in ipairs(a.nodes) do assert(not nodes[n.address],"节点重复分配："..n.address); nodes[n.address]=true end
-    port(a.io,a.address)
+    port(a.io,'input:'..a.buffer,true)
     local pool=assert(pools[a.beePool],"请选择使用的蜂群池："..a.address)
     local boxes,ends={},{}
     for _,box in ipairs(a.beeBoxes) do

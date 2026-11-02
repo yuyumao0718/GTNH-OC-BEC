@@ -1,22 +1,32 @@
 -- Each array advances one small step per tick; all durable state contains plain tables.
 local E={}; E.__index=E
 local function cellKey(c) return c.box..':'..c.slot end
-local phases={load='元件投料',admit='节点取料',wait='准备加工',run='加工中',['return']='回收蜂群'}
+local phases={load='元件投料',admit='节点取料',wait='准备加工',run='加工中',group_wait='等待同子网阵列',['return']='回收蜂群'}
 local nodeErrors={['internal-error']='节点内部错误',unpowered='节点供电不足',
   ['assembler-offline']='观测阵列未运行',['paused-immediate']='节点已被立即暂停',['paused-step']='节点已在步骤结束时暂停'}
 function E.new(cfg,state,io,modules)
   local self=setmetatable({cfg=cfg,s=state,io=io,U=modules.U,I=modules.I,N=modules.N,M=modules.M,
     status={},catalogs={},arrays={},errors={},observations={},provided={},now=0,closed={},settled={},filterNames={},healthAt={}},E)
-  for _,key in ipairs({'channels','arrays','queue','patterns','moves','poolCounts'}) do state[key]=state[key] or {} end
+  for _,key in ipairs({'channels','arrays','queue','patterns','moves','poolCounts','groups','groupDone'}) do state[key]=state[key] or {} end
   state.nextId=state.nextId or 1
   self.save=function() io.save(state) end
   self.log=modules.Log.new(cfg,state,io.proxy,self.save,self.U)
   self.pools=self.U.index(cfg.beePools)
   self.storage=io.proxy(cfg.storage)
   for _,a in ipairs(cfg.arrays) do if a.enabled then self.arrays[#self.arrays+1]=a end end
+  self.byAddress=self.U.index(self.arrays,'address'); self.subnets={}
+  for _,a in ipairs(self.arrays) do
+    self.subnets[a.buffer]=self.subnets[a.buffer] or {}; table.insert(self.subnets[a.buffer],a)
+  end
   return self
 end
 function E:items(address) local counts=self.I.inventory(self.io.proxy(address).getItemsInNetwork(),{}); return counts end
+function E:subnetBusy(a)
+  for _,peer in ipairs(self.subnets[a.buffer]) do
+    if peer.address~=a.address and (self.s.arrays[peer.address] or {}).batch then return true end
+  end
+  return false
+end
 function E:gate(c,closed)
   self.closed[c.id]=closed
   local locked=self.stopping or false
@@ -78,7 +88,7 @@ function E:check()
         for k,v in pairs(node.getRequiredCondensate()) do needed=needed+v-(consumed[k] or 0) end
       end
     end
-    if not (self.s.arrays[a.address] or {}).batch then assert(not next(self:items(a.buffer)),
+    if not (self.s.arrays[a.address] or {}).batch and not self.s.groups[a.buffer] and not self:subnetBusy(a) then assert(not next(self:items(a.buffer)),
       '阵列投料子网中有原料但没有续做记录，请运行 bec_multi.lua recover：'..a.address) end
   end
   assert(self.storage.hasWork() and self.storage.isWorkAllowed(),'请先启动约束场并持续供电')
@@ -183,10 +193,14 @@ function E:resources()
   self.reserved={}; self.waiting={}
   for _,a in ipairs(self.arrays) do
     local s=self.s.arrays[a.address]; local b=s.batch
-    if b then
+    if b and not b.group then
       self.U.add(self.reserved,self:remaining(a,s))
       if not b.granted and b.reserve and self.U.total(b.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,b.reserve) end
     end
+  end
+  for _,g in pairs(self.s.groups) do
+    if g.granted then self.U.add(self.reserved,self:groupRemaining(g))
+    elseif g.reserve and self.U.total(g.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,g.reserve) end
   end
   -- Read node obligations first: consumption between reads can only understate free stock.
   self.stock=self.storage.getStoredCondensate(); self.free={}
@@ -194,6 +208,12 @@ function E:resources()
   assert(self.U.total(self.stock)<=self.cfg.fieldLimit,'凝聚物库存超过场强容量')
 end
 function E:grant(b)
+  if b.group then
+    local g=self.s.groups[b.group]
+    if g.phase=='admit' then return false end
+    if not self:grant(g) then return false end
+    b.granted=true; return true
+  end
   if b.granted then return true end
   if self.U.total(b.reserve)>self.cfg.fieldLimit then return false end
   if not self.U.fits(self.free,b.reserve) then return false end
@@ -293,7 +313,7 @@ function E:schedule()
           if not found then capable=false end
         end
         if not s.batch then s.blocked=not capable and '蜂群池中没有适用于该配方的蜂群' or nil end
-        if not s.batch and not s.bee and not self.errors[a.address] and not conflict and capable then
+        if not s.batch and not self.s.groups[a.buffer] and not self:subnetBusy(a) and not s.bee and not self.errors[a.address] and not conflict and capable then
           local limit=meta.unit and (a.parallelLimit>0 and 2147483647 or self:waveSize(a,s,meta,2147483647)) or 1
           if a.reserved then limit=math.min(limit,#a.nodes) end
           local receipts,count={},0
@@ -315,6 +335,21 @@ function E:schedule()
               local b={key=g.key,count=count,done=0,receipts=receipts,cursor=1,phase='load',reserve=reserve,workers={},planned=a.parallelLimit==0 and planned or nil}
               s.blocked=nil; s.counts={}
               s.batch=b; self.s.queue=left; meta.dispatch=self.s.nextId; self.s.nextId=self.s.nextId+1
+              if #self.subnets[a.buffer]>1 then
+                local members={}
+                for _,peer in ipairs(self.subnets[a.buffer]) do
+                  local ps=self.s.arrays[peer.address]; local usable=not ps.batch and not ps.bee and not self.errors[peer.address]
+                  if peer==a then usable=true end
+                  if peer.reserved and count>#peer.nodes then usable=false end
+                  for _,step in ipairs(meta.steps or {}) do
+                    local found=false; for tier in pairs(self:beeCells(peer)) do if tier>=step.tier then found=true end end
+                    if not found then usable=false end
+                  end
+                  if usable then members[#members+1]=peer.address end
+                end
+                b.group=a.buffer
+                self.s.groups[a.buffer]={buffer=a.buffer,key=b.key,count=count,leader=a.address,members=members,phase='load',reserve=reserve}
+              end
               if reserve then self:grant(b) else self.save() end
               active[g.key]=(active[g.key] or 0)+1; break
             elseif reserve then
@@ -400,6 +435,102 @@ function E:bees(a,s,want)
   end
   return false
 end
+function E:groupRemaining(g)
+  if g.phase=='load' then return g.reserve or {} end
+  local meta=self.s.patterns[g.key]
+  if not meta.unit then return {} end
+  if g.continuous then
+    local items=self:items(g.buffer); local count=next(items) and self.I.receipts(meta.pattern,items) or 0
+    for _,id in ipairs(g.members) do
+      local b=self.s.arrays[id].batch
+      if b then for _,w in ipairs(b.workers) do count=count+(w.limit or w.count) end end
+    end
+    return self.U.scale(meta.unit,math.min(g.count,count))
+  end
+  local left={}
+  for _,id in ipairs(g.members) do
+    local b=self.s.arrays[id].batch
+    if b then for _,w in ipairs(b.workers) do
+      local n=self.io.proxy(w.address)
+      if n.hasWork() then
+        local used=n.getConsumedCondensate()
+        for k,v in pairs(n.getRequiredCondensate()) do left[k]=(left[k] or 0)+v-(used[k] or 0) end
+      end
+    end end
+  end
+  return left
+end
+function E:groupPrepare(g)
+  local meta=self.s.patterns[g.key]; local items=self:items(g.buffer)
+  local count,ready=self.I.receipts(meta.pattern,items)
+  assert(count==ready and count<=g.count,'共享子网原料与订单不一致')
+  local nodes=0; g.continuous=false
+  for _,id in ipairs(g.members) do
+    local a=self.byAddress[id]; nodes=nodes+#a.nodes
+    if a.parallelLimit>0 then g.continuous=true end
+  end
+  local target=ready
+  if not g.continuous and meta.unit then
+    local free=self.U.copy(self.free); if g.granted and g.phase=='load' then self.U.add(free,g.reserve or {}) end
+    target=math.min(target,math.floor(self.cfg.fieldLimit/self.U.total(meta.unit)))
+    local available=target; for k,v in pairs(meta.unit) do available=math.min(available,math.floor((free[k] or 0)/v)) end
+    target=math.min(target,math.max(1,available))
+  end
+  assert(target>0,'单份配方所需凝聚物超过场强容量')
+  local left=target; local slots=nodes
+  for _,id in ipairs(g.members) do
+    local a=self.byAddress[id]; local s=self.s.arrays[id]
+    local quota=math.min(left,math.ceil(left*#a.nodes/slots))
+    if a.parallelLimit>0 then quota=math.min(quota,#a.nodes*a.parallelLimit) end
+    slots=slots-#a.nodes; left=left-quota
+    if quota>0 then
+      local b={group=g.buffer,key=g.key,count=g.count,done=0,receipts={},workers={},phase='admit',continuous=a.parallelLimit>0}
+      local active=math.min(quota,#a.nodes)
+      for i=1,active do local amount=math.floor(quota/active)+(i<=quota%active and 1 or 0)
+        b.workers[i]={address=a.nodes[i].address,count=amount,limit=amount}
+      end
+      s.batch=b
+    else s.batch=nil end
+  end
+  g.phase='admit'; g.granted=false; g.reserve=nil; self.save()
+end
+function E:groupTick()
+  for buffer,g in pairs(self.s.groups) do
+    if g.phase=='admit' then
+      local ready=true; local count=0
+      for _,id in ipairs(g.members) do local b=self.s.arrays[id].batch
+        if b then
+          if b.phase~='wait' then ready=false end
+          for _,w in ipairs(b.workers) do count=count+w.count end
+        end
+      end
+      if ready then
+        local meta=self.s.patterns[g.key]; local items=self:items(buffer)
+        local remaining=next(items) and self.I.receipts(meta.pattern,items) or 0
+        assert(count+remaining<=g.count,'共享子网取料总数超过订单份数')
+        g.reserve=self.U.scale(meta.unit,g.continuous and count+remaining or count)
+        g.phase='work'; self.save()
+      end
+    elseif g.phase=='work' then
+      local ready=true
+      for _,id in ipairs(g.members) do local s=self.s.arrays[id]
+        if self.errors[id] or s.batch and s.batch.phase~='group_wait' or s.bee or s.lease then ready=false end
+      end
+      if ready then
+        if g.pending then
+          self.s.groupDone[buffer]=(self.s.groupDone[buffer] or 0)+g.count
+          g.key,g.count=g.pending.key,g.pending.count; g.pending=nil
+          self:groupPrepare(g)
+        elseif next(self:items(buffer)) then self:groupPrepare(g)
+        else
+          self.s.groupDone[buffer]=(self.s.groupDone[buffer] or 0)+g.count
+          for _,id in ipairs(g.members) do self.s.arrays[id].batch=nil end
+          self.s.groups[buffer]=nil; self.save()
+        end
+      end
+    end
+  end
+end
 function E:prepare(a,s)
   local b=s.batch; local meta=self.s.patterns[b.key]
   local counts=self:items(a.buffer)
@@ -423,7 +554,7 @@ end
 function E:recover(a,s)
   local b=s.batch; if not b or b.phase~='run' then return end
   local meta=self.s.patterns[b.key]; local counts=self:items(a.buffer)
-  local total=not b.adopted and next(counts) and self.I.receipts(meta.pattern,counts) or 0
+  local total=not b.group and not b.adopted and next(counts) and self.I.receipts(meta.pattern,counts) or 0
   local workers={}
   for _,node in ipairs(a.nodes) do
     local n=self.io.proxy(node.address)
@@ -443,12 +574,13 @@ function E:array(a)
   self:health(a)
   if not b or b.phase~='run' then self.observations[a.address]=nil end
   if not b then self:hold(a); self.status[a.address]=s.blocked or '空闲'; return end
-  local meta=self.s.patterns[b.key]; self.status[a.address]=phases[b.phase]..' · '..meta.pattern.label..' ×'..b.count
+  local meta=self.s.patterns[b.key]; self.status[a.address]=phases[b.phase]..' · '..meta.pattern.label..(b.group and ' / 子网共 ' or ' ×')..b.count
   if b.phase~='run' and not self:hold(a) then return end
   if b.phase=='load' then
     local r=b.receipts[b.cursor]; local owner='load:'..a.address
     if not r then
       assert(self.U.equal(self:items(a.buffer),self.U.scale(meta.pattern.inputs,b.count)),'投料子网中的原料数量与订单不一致')
+      if b.group then self:groupPrepare(self.s.groups[b.group]); return end
       self:prepare(a,s); return
     end
     local route=r.route or assert(self.log:find(r.inventory,a.io),'未配置接单元件到阵列投料 ME-IO 端口的路线')
@@ -481,11 +613,12 @@ function E:array(a)
     end
     if all then
       local counts=self:items(a.buffer); local remaining=next(counts) and self.I.receipts(meta.pattern,counts) or 0
-      assert(assigned+remaining==b.count-(b.done or 0),'节点取料份数与投料子网减少的原料份数不一致')
+      assert(b.group or assigned+remaining==b.count-(b.done or 0),'节点取料份数与投料子网减少的原料份数不一致')
       b.reserve=self.U.scale(meta.unit,b.continuous and b.count-(b.done or 0) or assigned)
       b.phase='wait'; self.save()
     end
   elseif b.phase=='wait' then
+    if b.group and self.s.groups[b.group].phase=='admit' then return end
     self:support(a,meta)
     if b.continuous and a.parallelLimit==0 then
       local count=0; for _,w in ipairs(b.workers) do count=count+w.count; self.io.proxy(w.address).setWorkAllowed(false) end
@@ -549,6 +682,10 @@ function E:array(a)
       if b.continuous and not b.yielding and next(self:items(a.buffer)) then return end
       for _,w in ipairs(b.workers) do self.io.proxy(w.address).setWorkAllowed(false) end
       if not self:hold(a) then return end
+      if b.group then
+        if not self:bees(a,s,nil) then return end
+        self:filters(a,{}); b.phase='group_wait'; self.save(); return
+      end
       if b.yielding or self:contended(a,s) then if not self:bees(a,s,nil) then return end end
       if not b.adopted and next(self:items(a.buffer)) then self:prepare(a,s); return end
       self:filters(a,{})
@@ -566,6 +703,8 @@ function E:array(a)
         end
       end
     end
+  elseif b.phase=='group_wait' then
+    self.status[a.address]='等待同子网阵列完成当前加工'
   elseif b.phase=='return' then
     if not self:bees(a,s,nil) then return end
     s.done=s.done+b.count; s.batch=nil; s.request=nil
@@ -578,6 +717,7 @@ end
 function E:drain()
   local failed,reason=next(self.errors); if failed then error('无法完成已接订单：'..failed..' / '..reason) end
   if #self.s.queue>0 then return false end
+  if next(self.s.groups) then return false end
   for _,s in pairs(self.s.channels) do if s.capture or s.supply then return false end end
   for _,c in ipairs(self.cfg.channels) do if next(self:items(c.buffer)) then return false end end
   for _,a in ipairs(self.arrays) do if self.s.arrays[a.address].batch then return false end end
@@ -603,6 +743,11 @@ function E:tick()
   if not self.recovered then
     for _,a in ipairs(self.arrays) do if not self:hold(a) then return end end
     for _,a in ipairs(self.arrays) do self:recover(a,self.s.arrays[a.address]) end
+    for _,g in pairs(self.s.groups) do if g.phase=='work' then
+      g.continuous=false
+      for _,id in ipairs(g.members) do local b=self.s.arrays[id].batch; if b then b.continuous=false; b.fixed=nil end end
+      if not g.granted then g.reserve=self:groupRemaining(g) end
+    end end
     self.recovered=true; self.gatherAt={}
   end
   self:resources()
@@ -620,6 +765,7 @@ function E:tick()
     local ok,err=pcall(self.array,self,a)
     if not ok then self.errors[a.address]=err; self:hold(a); for _,n in ipairs(a.nodes) do self.io.proxy(n.address).setWorkAllowed(false) end end
   end end
+  self:groupTick()
   if self.s.recovering then
     local busy=false
     for _,a in ipairs(self.arrays) do
