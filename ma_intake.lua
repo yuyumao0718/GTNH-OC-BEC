@@ -44,6 +44,14 @@ local function identity(counts)
   for _,key in ipairs(keys) do parts[#parts+1]=#key..":"..key.."="..counts[key] end
   return table.concat(parts,";")
 end
+-- Only the fifteen BEC computation singularities; the base singularity is not included.
+function I.singularity(outputs)
+  local key=next(outputs); if not key or next(outputs,key) then return end
+  for tier=0,14 do
+    local name=tier<10 and 'universalsingularities:universal.circuit.singularity' or 'universalsingularities:universal.circuit2.singularity'
+    if key==I.key({name=name,damage=tier<10 and tier or tier-10}) then return tier+1 end
+  end
+end
 function I.catalog(patterns)
   local result={patterns={}}
   for slot,p in pairs(patterns) do
@@ -76,6 +84,7 @@ function I.catalog(patterns)
       end
     end
     assert(next(entry.outputs),"处理样板未填写物品输出")
+    entry.singularity=I.singularity(entry.outputs)
     local inputs=identity(entry.inputs)
     entry.key=#inputs..":"..inputs..identity(entry.outputs)
     for _,other in ipairs(result.patterns) do

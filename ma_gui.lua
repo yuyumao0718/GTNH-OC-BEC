@@ -117,8 +117,9 @@ function G:choices(f,cfg,devices)
   return rows
 end
 function G:edit(cfg,component,save) return self.Editor.new(self,cfg,component,save):run() end
-local phases={admit='节点取料',wait='等待凝聚物或蜂群',run='加工',['return']='回收蜂群'}
+local phases={admit='节点取料',collect='收集算力奇点',wait='等待凝聚物或蜂群',run='加工',['return']='回收蜂群'}
 local function phase(b,s)
+  if b.phase=='collect' then return '收集算力奇点 '..#b.workers..'/15 种' end
   if s and s.bee then return (s.bee.loading and '装载 T' or '回收 T')..s.bee.tier..' 蜂群' end
   if s and s.request then return (s.request.supply and '等待补充 T' or '等待 T')..s.request.tier..' 蜂群' end
   if b.yielding then return '等待当前加工完成' end
@@ -192,7 +193,7 @@ function G:runtime(e,refill)
       local s=e.s.arrays[r.address]; local b=s and s.batch
       local label=e.errors[r.address] and '已暂停' or b and phase(b,s) or e.status[r.address] or '空闲'
       self:put(2,y,prefix..self:recordName(e.cfg,'arrays',r),19,ink.cyan,bg)
-      self:put(22,y,label..(b and ' ×'..b.count..' '..e.s.patterns[b.key].pattern.label or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
+      self:put(22,y,label..(b and ' ×'..b.count..' '..(b.collection and '算力奇点合并加工' or e.s.patterns[b.key].pattern.label) or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
     else self:put(2,y,prefix..r.label..'  '..(r.error and '已暂停' or r.status),left,r.error and ink.red or ink.text,bg) end
   end
   self:put(2,h-8,string.format('%d / %d  第 %d/%d 页',#list>0 and selected or 0,#list,page+1,math.max(1,math.ceil(#list/self.perPage))),left,ink.dim)
@@ -250,7 +251,7 @@ function G:arrayPanel(e,x,top,width,bottom)
         self:bar(x,y+1,width-9,n.progress/n.length)
         self:put(x+width-8,y+1,string.format('%5.1f%%',100*math.min(1,n.progress/n.length)),8,ink.cyan)
       end
-    else self:put(x,y,'#'..i..'  '..(worker and (b.phase=='run' and (observed and '本批完成' or '待读取') or '分配 '..worker.count..' 份') or '空闲'),width,ink.dim) end
+    else self:put(x,y,'#'..i..'  '..(worker and (b.phase=='run' and (observed and '本批完成' or '待读取') or (worker.accepted and '已取 ' or '分配 ')..worker.count..' 份') or '空闲'),width,ink.dim) end
   end
   self:button('node-',x,bottom,'上页'); self:button('node+',x+8,bottom,'下页')
   self:put(x+16,bottom,'节点 '..self.nodePage..'/'..self.nodePages,width-16,ink.dim)

@@ -120,6 +120,7 @@ local function side(key,label) return num(key,label,0,0,5) end
 local function id() return field("id","名称 / ID","text","") end
 C.schema={
   dev("storage","共享约束场","bec_storage"),num("fieldLimit","约束场强度 L",1000000000000,1,9007199254740991),
+  num("singularityWait","算力奇点等待阈值（秒）",300,1),
   list("inventories","库存位置",{id(),dev("transposer","读取库存的转运器","transposer"),side("side","库存方向")}),
   list("routes","元件搬运路线",{id(),list("steps","顺序步骤",{
     dev("transposer","搬运用转运器","transposer"),ref("from","来源库存","inventories"),side("fromSide","来源方向"),
@@ -128,7 +129,7 @@ C.schema={
     dev("buffer","公共原料子网 ME 控制器","buffer"),dev("redstone","接单红石 I/O","redstone"),side("gateSide","红石输出方向")}),
   list("beePools","共享蜂群池",{id(),list("cells","蜂群元件",{num("tier","等级",1,1,10),num("box","箱子编号",1,1),num("slot","箱内固定槽位",1,1)})}),
   list("arrays","观测阵列",{dev("address","观测阵列","assembler"),field("enabled","启用","boolean",true),
-    dev("diode","麦克斯韦门","bec_diode"),field("reserved","小单专用阵列","boolean",false),
+    dev("diode","麦克斯韦门","bec_diode"),
     list("nodes","关联的传送节点",{dev("address","节点","bec_io_node")}),
     ref("beePool","使用的蜂群池","beePools"),
     list("beeBoxes","蜂群箱连接",{num("box","箱子编号",1,1),ref("inventory","蜂群箱库存位置","inventories"),
@@ -323,12 +324,12 @@ files[#files+1]={name="ma_core.lua",code=[=[
 -- Each array advances one small step per tick; all durable state contains plain tables.
 local E={}; E.__index=E
 local function cellKey(c) return c.box..':'..c.slot end
-local phases={admit='节点取料',wait='准备加工',run='加工中',['return']='回收蜂群'}
+local phases={admit='节点取料',collect='收集算力奇点',wait='准备加工',run='加工中',['return']='回收蜂群'}
 local nodeErrors={['internal-error']='节点内部错误',unpowered='节点供电不足',
   ['assembler-offline']='观测阵列未运行',['paused-immediate']='节点已被立即暂停',['paused-step']='节点已在步骤结束时暂停'}
 function E.new(cfg,state,io,modules)
   local self=setmetatable({cfg=cfg,s=state,io=io,U=modules.U,I=modules.I,N=modules.N,M=modules.M,
-    status={},catalogs={},arrays={},errors={},observations={},provided={},now=0,closed={},settled={},filterNames={},healthAt={}},E)
+    status={},catalogs={},arrays={},errors={},observations={},provided={},now=0,closed={},settled={},filterNames={},healthAt={},collectAt={}},E)
   for _,key in ipairs({'channels','arrays','queue','patterns','moves','poolCounts'}) do state[key]=state[key] or {} end
   state.nextId=state.nextId or 1
   self.save=function() io.save(state) end
@@ -434,6 +435,7 @@ function E:channel(c)
   local count,complete=self.I.receipts(p,counts)
   if count~=complete or complete==0 then self.status[c.id]='等待原料到齐'; return end
   self.s.patterns[p.key]=self.s.patterns[p.key] or {pattern=p}
+  self.s.patterns[p.key].pattern=p
   self.s.queue[1]={id=self.s.nextId,key=p.key,count=count}
   self.s.nextId=self.s.nextId+1; self.settled[c.id]=nil; self.save()
 end
@@ -463,7 +465,7 @@ function E:resources()
     local s=self.s.arrays[a.address]; local b=s.batch
     if b then
       self.U.add(self.reserved,self:remaining(a,s))
-      if not b.granted and b.reserve and self.U.total(b.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,b.reserve) end
+      if b.phase~='collect' and not b.granted and b.reserve and self.U.total(b.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,b.reserve) end
     end
   end
   -- Read node obligations first: consumption between reads can only understate free stock.
@@ -581,22 +583,60 @@ function E:awaitFinishing(order,eligible)
   self.status[self.cfg.channels[1].id]=string.format('等待即将空闲的阵列（最多 %.0f 秒）',math.ceil(wait.untilTime-self.now))
   return true
 end
+function E:collections()
+  for _,a in ipairs(self.arrays) do
+    local b=self.s.arrays[a.address].batch
+    if b and b.phase=='collect' then
+      local c=b.collection
+      c.elapsed=c.elapsed+math.max(0,self.now-(self.collectAt[a.address] or self.now))
+      self.collectAt[a.address]=self.now
+      if self.stopping or #b.workers==15 or c.elapsed>=self.cfg.singularityWait then
+        b.phase='wait'; self.collectAt[a.address]=nil; self.save()
+      end
+    else self.collectAt[a.address]=nil end
+  end
+end
+function E:collectOrder(order,kind,idle)
+  local selected
+  for _,a in ipairs(self.arrays) do
+    local b=self.s.arrays[a.address].batch
+    if b and b.phase=='collect' and not self.errors[a.address] then
+      if b.collection.types[kind] then
+        self.status[self.cfg.channels[1].id]='等待当前算力奇点收集批次结束（本种类已收到）'; return
+      end
+      selected=a; break
+    end
+  end
+  if not selected then for _,a in ipairs(idle) do if #a.nodes>=15 then selected=a; break end end end
+  if not selected then
+    self.status[self.cfg.channels[1].id]='等待至少关联 15 个节点的空闲阵列制作算力奇点'; return
+  end
+  local s=self.s.arrays[selected.address]
+  local b=s.batch or {key=order.key,count=0,done=0,workers={},collection={types={},elapsed=0}}
+  local used={}; for _,w in ipairs(b.workers) do used[w.address]=true end
+  local node; for _,n in ipairs(selected.nodes) do if not used[n.address] then node=n; break end end
+  if not node then self.status[self.cfg.channels[1].id]='等待算力奇点收集批次结束（没有空闲节点）'; return end
+  b.workers[#b.workers+1]={address=node.address,key=order.key,count=order.count,limit=order.count}
+  b.count=b.count+order.count; b.collection.types[kind]=true
+  b.phase='admit'; b.admitting=true; s.batch=b; s.blocked=nil
+  self.s.admission={key=order.key,count=order.count,members={selected.address},node=node.address}
+  self.s.queue={}; self.finishWait=nil; self.save()
+end
 function E:schedule()
   local order=self.s.queue[1]; if not order or self.s.admission then return end
   local meta=self.s.patterns[order.key]; local idle,eligible={},{}
-  for _,reserved in ipairs({true,false}) do for _,a in ipairs(self.arrays) do
-    if not not a.reserved==reserved and (not a.reserved or order.count<=#a.nodes) then
-      local s=self.s.arrays[a.address]; local capable=true
-      for _,step in ipairs(meta.steps or {}) do
-        local found=false; for tier in pairs(self:beeCells(a)) do if tier>=step.tier then found=true end end
-        if not found then capable=false end
-      end
-      if capable and not self.errors[a.address] then
-        eligible[#eligible+1]=a
-        if not s.batch and not s.bee and not s.lease then idle[#idle+1]=a end
-      elseif not s.batch then s.blocked='蜂群池中没有适用于该配方的蜂群' end
+  for _,a in ipairs(self.arrays) do
+    local s=self.s.arrays[a.address]; local capable=true
+    for _,step in ipairs(meta.steps or {}) do
+      local found=false; for tier in pairs(self:beeCells(a)) do if tier>=step.tier then found=true end end
+      if not found then capable=false end
     end
-  end end
+    if capable and not self.errors[a.address] then
+      eligible[#eligible+1]=a
+      if not s.batch and not s.bee and not s.lease then idle[#idle+1]=a end
+    elseif not s.batch then s.blocked='蜂群池中没有适用于该配方的蜂群' end
+  end
+  if meta.pattern.singularity then self:collectOrder(order,meta.pattern.singularity,idle); return end
   if #idle==0 then self.status[self.cfg.channels[1].id]='等待空闲阵列'; return end
   local small=false
   for _,a in ipairs(idle) do if order.count<=#a.nodes then idle={a}; small=true; break end end
@@ -626,11 +666,19 @@ function E:admissionTick()
   for _,id in ipairs(admission.members) do
     local b=self.s.arrays[id].batch
     if self.errors[id] or b.phase~='wait' then return end
-    count=count+b.count
+    if admission.node then
+      for _,w in ipairs(b.workers) do if w.address==admission.node then count=count+w.count end end
+    else count=count+b.count end
   end
   assert(count==admission.count and not next(self:items(self.cfg.channels[1].buffer)),
     '节点取料与订单不一致，公共原料子网仍有原料；请核对节点的实际并行能力后续做')
-  for _,id in ipairs(admission.members) do self.s.arrays[id].batch.admitting=nil end
+  for _,id in ipairs(admission.members) do
+    local b=self.s.arrays[id].batch; b.admitting=nil
+    if b.collection then
+      b.collection.elapsed=0; self.collectAt[id]=self.now
+      if #b.workers<15 and not self.stopping then b.phase='collect' end
+    end
+  end
   self.s.admission=nil; self.save()
 end
 function E:filters(a,unit)
@@ -706,7 +754,15 @@ function E:bees(a,s,want)
 end
 
 function E:recover(a,s)
-  local b=s.batch; if not b or b.phase~='run' then return end
+  local b=s.batch; if not b then return end
+  if b.collection and not b.started then
+    for _,w in ipairs(b.workers) do if w.accepted then
+      local n=self.io.proxy(w.address)
+      assert(n.hasWork() and n.getParallelRecipesInProgress()==w.count and n.getWorkProgress()==0,
+        '算力奇点收集记录与节点不一致，请核对节点：'..w.address)
+    end end
+  end
+  if b.phase~='run' then return end
   local meta=self.s.patterns[b.key]; local total=0
   local workers={}
   for _,node in ipairs(a.nodes) do
@@ -727,23 +783,32 @@ function E:array(a)
   self:health(a)
   if not b or b.phase~='run' then self.observations[a.address]=nil end
   if not b then self:hold(a); self.status[a.address]=s.blocked or '空闲'; return end
-  local meta=self.s.patterns[b.key]; self.status[a.address]=phases[b.phase]..' · '..meta.pattern.label..' ×'..b.count
+  local meta=self.s.patterns[b.key]
+  self.status[a.address]=phases[b.phase]..' · '..(b.collection and '算力奇点合并加工' or meta.pattern.label)..' ×'..b.count
   if b.phase~='run' and not self:hold(a) then return end
   if b.phase=='admit' then
     local all=true; local assigned=0
     for _,w in ipairs(b.workers) do
-      local n=self.io.proxy(w.address)
-      if n.hasWork() then
-        n.setWorkAllowed(false)
-        local count=n.getParallelRecipesInProgress()
-        assert(n.getWorkProgress()==0 and count==w.limit,'节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置')
-        w.count=count; assigned=assigned+count
-        local required=n.getRequiredCondensate(); local steps=self.N.steps(n.getRecipeSteps()); local unit={}
-        for k,v in pairs(required) do unit[k]=v/count end; assert(self.U.total(unit)>0,'未读取到节点的凝聚物需求')
-        if not meta.unit then meta.unit=unit; meta.steps=steps; self.save() end
-        assert(self.U.equal(meta.unit,unit) and self.U.equal(meta.steps,steps),'节点配方与已记录的处理样板不一致')
+      if b.collection and w.accepted then assigned=assigned+w.count
       else
-        n.setMinParallel(1); n.setMaxParallel(w.limit or w.count); n.setWorkAllowed(true); all=false
+        local n=self.io.proxy(w.address)
+        if n.hasWork() then
+          n.setWorkAllowed(false)
+          local count=n.getParallelRecipesInProgress()
+          assert(n.getWorkProgress()==0 and count==w.limit,'节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置')
+          w.count=count; assigned=assigned+count
+          local required=n.getRequiredCondensate(); local steps=self.N.steps(n.getRecipeSteps()); local unit={}
+          for k,v in pairs(required) do unit[k]=v/count end; assert(self.U.total(unit)>0,'未读取到节点的凝聚物需求')
+          if not meta.unit then meta.unit=unit; meta.steps=steps; self.save() end
+          assert(self.U.equal(meta.unit,unit) and self.U.equal(meta.steps,steps),'节点配方与已记录的处理样板不一致')
+          if w.key then
+            local own=self.s.patterns[w.key]
+            assert(not own.unit or self.U.equal(own.unit,unit) and self.U.equal(own.steps,steps),'算力奇点配方与已记录的处理样板不一致')
+            own.unit,own.steps=unit,steps; w.accepted=true
+          end
+        else
+          n.setMinParallel(1); n.setMaxParallel(w.limit or w.count); n.setWorkAllowed(true); all=false
+        end
       end
     end
     if all then
@@ -751,6 +816,9 @@ function E:array(a)
       b.reserve=self.U.scale(meta.unit,assigned)
       b.phase='wait'; self.save()
     end
+  elseif b.phase=='collect' then
+    self.status[a.address]=string.format('算力奇点已收 %d/15 种；等待新种类，超时剩余 %.0f 秒',
+      #b.workers,math.ceil(math.max(0,self.cfg.singularityWait-b.collection.elapsed)))
   elseif b.phase=='wait' then
     if b.admitting then return end
     self:support(a,meta)
@@ -854,6 +922,7 @@ function E:tick()
     self.recovered=true
   end
   self:resources()
+  self:collections()
   for _,c in ipairs(self.cfg.channels) do if not self.errors[c.id] then
     local ok,err=pcall(self.channel,self,c); if not ok then self.errors[c.id]=err; self:gate(c,true) end
   end end
@@ -1105,7 +1174,8 @@ function F:form(fluidIndex)
     action('关联的传送节点：'..#x.nodes..' 个',function() self:nodePicker(x) end)
     action('绑定未分配节点',function() self:bindNodes(x) end)
     action('麦克斯韦门：'..(x.diode~='' and x.diode:sub(1,12) or '未绑定'),function() self:doorPicker(x) end)
-    title('加工参数'); field('小单专用阵列',x,'reserved','boolean')
+    title('全局加工设置（所有阵列共用）')
+    field('算力奇点等待阈值（秒）',self.cfg,'singularityWait','number',nil,1,2147483647)
     title('蜂群装载配置'); field('使用的蜂群池',x,'beePool','choice','beePools')
     local pool=find(self.cfg.beePools,'id',x.beePool)
     if pool then
@@ -1603,8 +1673,9 @@ function G:choices(f,cfg,devices)
   return rows
 end
 function G:edit(cfg,component,save) return self.Editor.new(self,cfg,component,save):run() end
-local phases={admit='节点取料',wait='等待凝聚物或蜂群',run='加工',['return']='回收蜂群'}
+local phases={admit='节点取料',collect='收集算力奇点',wait='等待凝聚物或蜂群',run='加工',['return']='回收蜂群'}
 local function phase(b,s)
+  if b.phase=='collect' then return '收集算力奇点 '..#b.workers..'/15 种' end
   if s and s.bee then return (s.bee.loading and '装载 T' or '回收 T')..s.bee.tier..' 蜂群' end
   if s and s.request then return (s.request.supply and '等待补充 T' or '等待 T')..s.request.tier..' 蜂群' end
   if b.yielding then return '等待当前加工完成' end
@@ -1678,7 +1749,7 @@ function G:runtime(e,refill)
       local s=e.s.arrays[r.address]; local b=s and s.batch
       local label=e.errors[r.address] and '已暂停' or b and phase(b,s) or e.status[r.address] or '空闲'
       self:put(2,y,prefix..self:recordName(e.cfg,'arrays',r),19,ink.cyan,bg)
-      self:put(22,y,label..(b and ' ×'..b.count..' '..e.s.patterns[b.key].pattern.label or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
+      self:put(22,y,label..(b and ' ×'..b.count..' '..(b.collection and '算力奇点合并加工' or e.s.patterns[b.key].pattern.label) or ''),left-20,e.errors[r.address] and ink.red or ink.text,bg)
     else self:put(2,y,prefix..r.label..'  '..(r.error and '已暂停' or r.status),left,r.error and ink.red or ink.text,bg) end
   end
   self:put(2,h-8,string.format('%d / %d  第 %d/%d 页',#list>0 and selected or 0,#list,page+1,math.max(1,math.ceil(#list/self.perPage))),left,ink.dim)
@@ -1736,7 +1807,7 @@ function G:arrayPanel(e,x,top,width,bottom)
         self:bar(x,y+1,width-9,n.progress/n.length)
         self:put(x+width-8,y+1,string.format('%5.1f%%',100*math.min(1,n.progress/n.length)),8,ink.cyan)
       end
-    else self:put(x,y,'#'..i..'  '..(worker and (b.phase=='run' and (observed and '本批完成' or '待读取') or '分配 '..worker.count..' 份') or '空闲'),width,ink.dim) end
+    else self:put(x,y,'#'..i..'  '..(worker and (b.phase=='run' and (observed and '本批完成' or '待读取') or (worker.accepted and '已取 ' or '分配 ')..worker.count..' 份') or '空闲'),width,ink.dim) end
   end
   self:button('node-',x,bottom,'上页'); self:button('node+',x+8,bottom,'下页')
   self:put(x+16,bottom,'节点 '..self.nodePage..'/'..self.nodePages,width-16,ink.dim)
@@ -1815,6 +1886,14 @@ local function identity(counts)
   for _,key in ipairs(keys) do parts[#parts+1]=#key..":"..key.."="..counts[key] end
   return table.concat(parts,";")
 end
+-- Only the fifteen BEC computation singularities; the base singularity is not included.
+function I.singularity(outputs)
+  local key=next(outputs); if not key or next(outputs,key) then return end
+  for tier=0,14 do
+    local name=tier<10 and 'universalsingularities:universal.circuit.singularity' or 'universalsingularities:universal.circuit2.singularity'
+    if key==I.key({name=name,damage=tier<10 and tier or tier-10}) then return tier+1 end
+  end
+end
 function I.catalog(patterns)
   local result={patterns={}}
   for slot,p in pairs(patterns) do
@@ -1847,6 +1926,7 @@ function I.catalog(patterns)
       end
     end
     assert(next(entry.outputs),"处理样板未填写物品输出")
+    entry.singularity=I.singularity(entry.outputs)
     local inputs=identity(entry.inputs)
     entry.key=#inputs..":"..inputs..identity(entry.outputs)
     for _,other in ipairs(result.patterns) do

@@ -10,6 +10,7 @@ local function side(key,label) return num(key,label,0,0,5) end
 local function id() return field("id","名称 / ID","text","") end
 C.schema={
   dev("storage","共享约束场","bec_storage"),num("fieldLimit","约束场强度 L",1000000000000,1,9007199254740991),
+  num("singularityWait","算力奇点等待阈值（秒）",300,1),
   list("inventories","库存位置",{id(),dev("transposer","读取库存的转运器","transposer"),side("side","库存方向")}),
   list("routes","元件搬运路线",{id(),list("steps","顺序步骤",{
     dev("transposer","搬运用转运器","transposer"),ref("from","来源库存","inventories"),side("fromSide","来源方向"),
@@ -18,7 +19,7 @@ C.schema={
     dev("buffer","公共原料子网 ME 控制器","buffer"),dev("redstone","接单红石 I/O","redstone"),side("gateSide","红石输出方向")}),
   list("beePools","共享蜂群池",{id(),list("cells","蜂群元件",{num("tier","等级",1,1,10),num("box","箱子编号",1,1),num("slot","箱内固定槽位",1,1)})}),
   list("arrays","观测阵列",{dev("address","观测阵列","assembler"),field("enabled","启用","boolean",true),
-    dev("diode","麦克斯韦门","bec_diode"),field("reserved","小单专用阵列","boolean",false),
+    dev("diode","麦克斯韦门","bec_diode"),
     list("nodes","关联的传送节点",{dev("address","节点","bec_io_node")}),
     ref("beePool","使用的蜂群池","beePools"),
     list("beeBoxes","蜂群箱连接",{num("box","箱子编号",1,1),ref("inventory","蜂群箱库存位置","inventories"),

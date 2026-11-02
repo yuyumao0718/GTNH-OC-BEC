@@ -1,12 +1,12 @@
 -- Each array advances one small step per tick; all durable state contains plain tables.
 local E={}; E.__index=E
 local function cellKey(c) return c.box..':'..c.slot end
-local phases={admit='节点取料',wait='准备加工',run='加工中',['return']='回收蜂群'}
+local phases={admit='节点取料',collect='收集算力奇点',wait='准备加工',run='加工中',['return']='回收蜂群'}
 local nodeErrors={['internal-error']='节点内部错误',unpowered='节点供电不足',
   ['assembler-offline']='观测阵列未运行',['paused-immediate']='节点已被立即暂停',['paused-step']='节点已在步骤结束时暂停'}
 function E.new(cfg,state,io,modules)
   local self=setmetatable({cfg=cfg,s=state,io=io,U=modules.U,I=modules.I,N=modules.N,M=modules.M,
-    status={},catalogs={},arrays={},errors={},observations={},provided={},now=0,closed={},settled={},filterNames={},healthAt={}},E)
+    status={},catalogs={},arrays={},errors={},observations={},provided={},now=0,closed={},settled={},filterNames={},healthAt={},collectAt={}},E)
   for _,key in ipairs({'channels','arrays','queue','patterns','moves','poolCounts'}) do state[key]=state[key] or {} end
   state.nextId=state.nextId or 1
   self.save=function() io.save(state) end
@@ -112,6 +112,7 @@ function E:channel(c)
   local count,complete=self.I.receipts(p,counts)
   if count~=complete or complete==0 then self.status[c.id]='等待原料到齐'; return end
   self.s.patterns[p.key]=self.s.patterns[p.key] or {pattern=p}
+  self.s.patterns[p.key].pattern=p
   self.s.queue[1]={id=self.s.nextId,key=p.key,count=count}
   self.s.nextId=self.s.nextId+1; self.settled[c.id]=nil; self.save()
 end
@@ -141,7 +142,7 @@ function E:resources()
     local s=self.s.arrays[a.address]; local b=s.batch
     if b then
       self.U.add(self.reserved,self:remaining(a,s))
-      if not b.granted and b.reserve and self.U.total(b.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,b.reserve) end
+      if b.phase~='collect' and not b.granted and b.reserve and self.U.total(b.reserve)<=self.cfg.fieldLimit then self.U.add(self.waiting,b.reserve) end
     end
   end
   -- Read node obligations first: consumption between reads can only understate free stock.
@@ -259,22 +260,60 @@ function E:awaitFinishing(order,eligible)
   self.status[self.cfg.channels[1].id]=string.format('等待即将空闲的阵列（最多 %.0f 秒）',math.ceil(wait.untilTime-self.now))
   return true
 end
+function E:collections()
+  for _,a in ipairs(self.arrays) do
+    local b=self.s.arrays[a.address].batch
+    if b and b.phase=='collect' then
+      local c=b.collection
+      c.elapsed=c.elapsed+math.max(0,self.now-(self.collectAt[a.address] or self.now))
+      self.collectAt[a.address]=self.now
+      if self.stopping or #b.workers==15 or c.elapsed>=self.cfg.singularityWait then
+        b.phase='wait'; self.collectAt[a.address]=nil; self.save()
+      end
+    else self.collectAt[a.address]=nil end
+  end
+end
+function E:collectOrder(order,kind,idle)
+  local selected
+  for _,a in ipairs(self.arrays) do
+    local b=self.s.arrays[a.address].batch
+    if b and b.phase=='collect' and not self.errors[a.address] then
+      if b.collection.types[kind] then
+        self.status[self.cfg.channels[1].id]='等待当前算力奇点收集批次结束（本种类已收到）'; return
+      end
+      selected=a; break
+    end
+  end
+  if not selected then for _,a in ipairs(idle) do if #a.nodes>=15 then selected=a; break end end end
+  if not selected then
+    self.status[self.cfg.channels[1].id]='等待至少关联 15 个节点的空闲阵列制作算力奇点'; return
+  end
+  local s=self.s.arrays[selected.address]
+  local b=s.batch or {key=order.key,count=0,done=0,workers={},collection={types={},elapsed=0}}
+  local used={}; for _,w in ipairs(b.workers) do used[w.address]=true end
+  local node; for _,n in ipairs(selected.nodes) do if not used[n.address] then node=n; break end end
+  if not node then self.status[self.cfg.channels[1].id]='等待算力奇点收集批次结束（没有空闲节点）'; return end
+  b.workers[#b.workers+1]={address=node.address,key=order.key,count=order.count,limit=order.count}
+  b.count=b.count+order.count; b.collection.types[kind]=true
+  b.phase='admit'; b.admitting=true; s.batch=b; s.blocked=nil
+  self.s.admission={key=order.key,count=order.count,members={selected.address},node=node.address}
+  self.s.queue={}; self.finishWait=nil; self.save()
+end
 function E:schedule()
   local order=self.s.queue[1]; if not order or self.s.admission then return end
   local meta=self.s.patterns[order.key]; local idle,eligible={},{}
-  for _,reserved in ipairs({true,false}) do for _,a in ipairs(self.arrays) do
-    if not not a.reserved==reserved and (not a.reserved or order.count<=#a.nodes) then
-      local s=self.s.arrays[a.address]; local capable=true
-      for _,step in ipairs(meta.steps or {}) do
-        local found=false; for tier in pairs(self:beeCells(a)) do if tier>=step.tier then found=true end end
-        if not found then capable=false end
-      end
-      if capable and not self.errors[a.address] then
-        eligible[#eligible+1]=a
-        if not s.batch and not s.bee and not s.lease then idle[#idle+1]=a end
-      elseif not s.batch then s.blocked='蜂群池中没有适用于该配方的蜂群' end
+  for _,a in ipairs(self.arrays) do
+    local s=self.s.arrays[a.address]; local capable=true
+    for _,step in ipairs(meta.steps or {}) do
+      local found=false; for tier in pairs(self:beeCells(a)) do if tier>=step.tier then found=true end end
+      if not found then capable=false end
     end
-  end end
+    if capable and not self.errors[a.address] then
+      eligible[#eligible+1]=a
+      if not s.batch and not s.bee and not s.lease then idle[#idle+1]=a end
+    elseif not s.batch then s.blocked='蜂群池中没有适用于该配方的蜂群' end
+  end
+  if meta.pattern.singularity then self:collectOrder(order,meta.pattern.singularity,idle); return end
   if #idle==0 then self.status[self.cfg.channels[1].id]='等待空闲阵列'; return end
   local small=false
   for _,a in ipairs(idle) do if order.count<=#a.nodes then idle={a}; small=true; break end end
@@ -304,11 +343,19 @@ function E:admissionTick()
   for _,id in ipairs(admission.members) do
     local b=self.s.arrays[id].batch
     if self.errors[id] or b.phase~='wait' then return end
-    count=count+b.count
+    if admission.node then
+      for _,w in ipairs(b.workers) do if w.address==admission.node then count=count+w.count end end
+    else count=count+b.count end
   end
   assert(count==admission.count and not next(self:items(self.cfg.channels[1].buffer)),
     '节点取料与订单不一致，公共原料子网仍有原料；请核对节点的实际并行能力后续做')
-  for _,id in ipairs(admission.members) do self.s.arrays[id].batch.admitting=nil end
+  for _,id in ipairs(admission.members) do
+    local b=self.s.arrays[id].batch; b.admitting=nil
+    if b.collection then
+      b.collection.elapsed=0; self.collectAt[id]=self.now
+      if #b.workers<15 and not self.stopping then b.phase='collect' end
+    end
+  end
   self.s.admission=nil; self.save()
 end
 function E:filters(a,unit)
@@ -384,7 +431,15 @@ function E:bees(a,s,want)
 end
 
 function E:recover(a,s)
-  local b=s.batch; if not b or b.phase~='run' then return end
+  local b=s.batch; if not b then return end
+  if b.collection and not b.started then
+    for _,w in ipairs(b.workers) do if w.accepted then
+      local n=self.io.proxy(w.address)
+      assert(n.hasWork() and n.getParallelRecipesInProgress()==w.count and n.getWorkProgress()==0,
+        '算力奇点收集记录与节点不一致，请核对节点：'..w.address)
+    end end
+  end
+  if b.phase~='run' then return end
   local meta=self.s.patterns[b.key]; local total=0
   local workers={}
   for _,node in ipairs(a.nodes) do
@@ -405,23 +460,32 @@ function E:array(a)
   self:health(a)
   if not b or b.phase~='run' then self.observations[a.address]=nil end
   if not b then self:hold(a); self.status[a.address]=s.blocked or '空闲'; return end
-  local meta=self.s.patterns[b.key]; self.status[a.address]=phases[b.phase]..' · '..meta.pattern.label..' ×'..b.count
+  local meta=self.s.patterns[b.key]
+  self.status[a.address]=phases[b.phase]..' · '..(b.collection and '算力奇点合并加工' or meta.pattern.label)..' ×'..b.count
   if b.phase~='run' and not self:hold(a) then return end
   if b.phase=='admit' then
     local all=true; local assigned=0
     for _,w in ipairs(b.workers) do
-      local n=self.io.proxy(w.address)
-      if n.hasWork() then
-        n.setWorkAllowed(false)
-        local count=n.getParallelRecipesInProgress()
-        assert(n.getWorkProgress()==0 and count==w.limit,'节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置')
-        w.count=count; assigned=assigned+count
-        local required=n.getRequiredCondensate(); local steps=self.N.steps(n.getRecipeSteps()); local unit={}
-        for k,v in pairs(required) do unit[k]=v/count end; assert(self.U.total(unit)>0,'未读取到节点的凝聚物需求')
-        if not meta.unit then meta.unit=unit; meta.steps=steps; self.save() end
-        assert(self.U.equal(meta.unit,unit) and self.U.equal(meta.steps,steps),'节点配方与已记录的处理样板不一致')
+      if b.collection and w.accepted then assigned=assigned+w.count
       else
-        n.setMinParallel(1); n.setMaxParallel(w.limit or w.count); n.setWorkAllowed(true); all=false
+        local n=self.io.proxy(w.address)
+        if n.hasWork() then
+          n.setWorkAllowed(false)
+          local count=n.getParallelRecipesInProgress()
+          assert(n.getWorkProgress()==0 and count==w.limit,'节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置')
+          w.count=count; assigned=assigned+count
+          local required=n.getRequiredCondensate(); local steps=self.N.steps(n.getRecipeSteps()); local unit={}
+          for k,v in pairs(required) do unit[k]=v/count end; assert(self.U.total(unit)>0,'未读取到节点的凝聚物需求')
+          if not meta.unit then meta.unit=unit; meta.steps=steps; self.save() end
+          assert(self.U.equal(meta.unit,unit) and self.U.equal(meta.steps,steps),'节点配方与已记录的处理样板不一致')
+          if w.key then
+            local own=self.s.patterns[w.key]
+            assert(not own.unit or self.U.equal(own.unit,unit) and self.U.equal(own.steps,steps),'算力奇点配方与已记录的处理样板不一致')
+            own.unit,own.steps=unit,steps; w.accepted=true
+          end
+        else
+          n.setMinParallel(1); n.setMaxParallel(w.limit or w.count); n.setWorkAllowed(true); all=false
+        end
       end
     end
     if all then
@@ -429,6 +493,9 @@ function E:array(a)
       b.reserve=self.U.scale(meta.unit,assigned)
       b.phase='wait'; self.save()
     end
+  elseif b.phase=='collect' then
+    self.status[a.address]=string.format('算力奇点已收 %d/15 种；等待新种类，超时剩余 %.0f 秒',
+      #b.workers,math.ceil(math.max(0,self.cfg.singularityWait-b.collection.elapsed)))
   elseif b.phase=='wait' then
     if b.admitting then return end
     self:support(a,meta)
@@ -532,6 +599,7 @@ function E:tick()
     self.recovered=true
   end
   self:resources()
+  self:collections()
   for _,c in ipairs(self.cfg.channels) do if not self.errors[c.id] then
     local ok,err=pcall(self.channel,self,c); if not ok then self.errors[c.id]=err; self:gate(c,true) end
   end end
