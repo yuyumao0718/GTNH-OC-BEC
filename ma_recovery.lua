@@ -162,6 +162,7 @@ function R.check(cfg, state, U, proxy, M)
     end
     return true
 end
+
 function R.adopt(e, choose)
     e:catalogsRead()
     local arrays, patterns = e.U.copy(e.s.arrays), e.U.copy(e.s.patterns)
@@ -195,8 +196,7 @@ function R.adopt(e, choose)
                     )
                     unit, steps = per, recipe
                     count = count + parallel
-                    workers[#workers + 1] =
-                        { address = node.address, count = parallel, limit = parallel }
+                    workers[#workers + 1] = { address = node.address, count = parallel }
                 end
             end
             -- With no move record, an occupied port has no recoverable return address.
@@ -230,12 +230,10 @@ function R.adopt(e, choose)
                 s.batch = {
                     key = key,
                     count = count,
-                    done = 0,
                     workers = workers,
                     phase = 'run',
                     started = true,
                     granted = true,
-                    adopted = true,
                 }
             end
         end
@@ -249,7 +247,8 @@ function R.adopt(e, choose)
             local candidates = {}
             for _, c in ipairs(e.pools[a.beePool].cells) do
                 if
-                    c.tier == provided.tier and not used[a.beePool .. ':' .. c.box .. ':' .. c.slot]
+                    c.tier == provided.tier
+                    and not used[a.beePool .. ':' .. c.box .. ':' .. c.slot]
                 then
                     local stack = e.log:stack(e:beeAccess(a, c).inventory, c.slot)
                     if stack and stack.storedItemCount == 0 then

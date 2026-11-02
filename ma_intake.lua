@@ -4,45 +4,39 @@ local I = {}
 local function integer(n)
     return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
 end
-function I.key(s, fluid)
-    assert(type(s) == 'table' and type(s.name) == 'string', '物品或流体描述缺少注册名')
+
+function I.key(s)
+    assert(type(s) == 'table' and type(s.name) == 'string', '物品描述缺少注册名')
     local tag = ''
     if s.hasTag then
         assert(
-            not fluid and type(s.tag) == 'string',
+            type(s.tag) == 'string',
             '无法读取物品 NBT 数据，请启用 OC 的物品 NBT 访问或使用无标签原料'
         )
         tag = s.tag
     end
-    return (fluid and 'f:' or 'i:')
-        .. #s.name
-        .. ':'
-        .. s.name
-        .. ':'
-        .. tostring(fluid and 0 or s.damage or 0)
-        .. ':'
-        .. tag
+    return 'i:' .. #s.name .. ':' .. s.name .. ':' .. tostring(s.damage or 0) .. ':' .. tag
 end
+
 function I.amount(s, fluid)
     local n = fluid and (s.amount or s.size) or s.size
     assert(integer(n), '物品或流体数量不是精确的非负整数')
     return n
 end
-function I.inventory(items, fluids)
-    local counts, descriptors = {}, {}
-    for _, list in ipairs({ { items, false }, { fluids, true } }) do
-        for _, s in pairs(list[1]) do
-            local n = I.amount(s, list[2])
-            if n > 0 then
-                local key = I.key(s, list[2])
-                counts[key] = (counts[key] or 0) + n
-                assert(integer(counts[key]), '库存数量超出精确数值范围')
-                descriptors[key] = s
-            end
+
+function I.inventory(items)
+    local counts = {}
+    for _, s in pairs(items) do
+        local n = I.amount(s)
+        if n > 0 then
+            local key = I.key(s)
+            counts[key] = (counts[key] or 0) + n
+            assert(integer(counts[key]), '库存数量超出精确数值范围')
         end
     end
-    return counts, descriptors
+    return counts
 end
+
 local function subset(a, b)
     for key in pairs(a) do
         if not b[key] then
@@ -51,6 +45,7 @@ local function subset(a, b)
     end
     return true
 end
+
 local function identity(counts)
     local keys, parts = {}, {}
     for key in pairs(counts) do
@@ -76,6 +71,7 @@ function I.singularity(outputs)
         end
     end
 end
+
 function I.catalog(patterns)
     local result = { patterns = {} }
     for slot, p in pairs(patterns) do
@@ -84,7 +80,7 @@ function I.catalog(patterns)
             type(p.inputs) == 'table' and type(p.outputs) == 'table',
             '无法读取槽位 ' .. slot .. ' 中的样板输入和输出'
         )
-        local entry = { slot = slot, inputs = {}, solids = {}, outputs = {} }
+        local entry = { slot = slot, inputs = {}, outputs = {} }
         for _, s in pairs(p.inputs) do
             if s.name then
                 assert(
@@ -95,24 +91,21 @@ function I.catalog(patterns)
                 local fluid = s.amount ~= nil and s.damage == nil
                 local n = I.amount(s, fluid)
                 if n > 0 then
-                    local key = I.key(s, fluid)
+                    assert(
+                        not fluid,
+                        '处理样板的输入只能包含固体原料，请删除流体输入'
+                    )
+                    local key = I.key(s)
                     entry.inputs[key] = (entry.inputs[key] or 0) + n
-                    if fluid then
-                        error(
-                            '处理样板的输入只能包含固体原料，请删除流体输入'
-                        )
-                    else
-                        entry.solids[key] = true
-                    end
                 end
             end
         end
-        assert(next(entry.solids), '槽位 ' .. slot .. ' 中的样板未填写固体原料')
+        assert(next(entry.inputs), '槽位 ' .. slot .. ' 中的样板未填写固体原料')
 
         for _, s in pairs(p.outputs) do
             if s.name and I.amount(s, s.amount ~= nil and s.damage == nil) > 0 then
                 assert(s.damage ~= nil, '处理样板的输出必须是物品')
-                local key = I.key(s, false)
+                local key = I.key(s)
                 entry.outputs[key] = (entry.outputs[key] or 0) + I.amount(s, false)
                 entry.label = entry.label or s.label or s.name
             end
@@ -123,12 +116,12 @@ function I.catalog(patterns)
         entry.key = #inputs .. ':' .. inputs .. identity(entry.outputs)
         for _, other in ipairs(result.patterns) do
             assert(
-                not subset(entry.solids, other.solids) and not subset(other.solids, entry.solids),
+                not subset(entry.inputs, other.inputs) and not subset(other.inputs, entry.inputs),
                 '无法区分槽位 '
                     .. slot
                     .. ' 与 '
                     .. other.slot
-                    .. ' 的样板；请删除重复样板，或分别放入独立接单通道'
+                    .. ' 的样板；公共原料子网无法区分这些原料，请删除或调整冲突样板'
             )
         end
         result.patterns[#result.patterns + 1] = entry
@@ -136,6 +129,7 @@ function I.catalog(patterns)
     assert(#result.patterns > 0, '配置的样板接口中没有处理样板')
     return result
 end
+
 function I.identify(catalog, counts)
     if not next(counts) then
         return nil
@@ -152,7 +146,7 @@ function I.identify(catalog, counts)
         if compatible then
             partial = true
             local ready = true
-            for key in pairs(p.solids) do
+            for key in pairs(p.inputs) do
                 if (counts[key] or 0) == 0 then
                     ready = false
                     break

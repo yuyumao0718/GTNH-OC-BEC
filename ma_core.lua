@@ -18,32 +18,29 @@ local nodeErrors = {
     ['paused-immediate'] = '节点已被立即暂停',
     ['paused-step'] = '节点已在步骤结束时暂停',
 }
+
 function E.new(cfg, state, io, modules)
-    local self = setmetatable(
-        {
-            cfg = cfg,
-            s = state,
-            io = io,
-            U = modules.U,
-            I = modules.I,
-            N = modules.N,
-            M = modules.M,
-            status = {},
-            catalogs = {},
-            arrays = {},
-            errors = {},
-            observations = {},
-            provided = {},
-            now = 0,
-            closed = {},
-            settled = {},
-            filterNames = {},
-            healthAt = {},
-            collectAt = {},
-        },
-        E
-    )
-    for _, key in ipairs({ 'channels', 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
+    local self = setmetatable({
+        cfg = cfg,
+        s = state,
+        io = io,
+        U = modules.U,
+        I = modules.I,
+        N = modules.N,
+        M = modules.M,
+        status = {},
+        catalogs = {},
+        arrays = {},
+        errors = {},
+        observations = {},
+        provided = {},
+        now = 0,
+        settled = {},
+        filterNames = {},
+        healthAt = {},
+        collectAt = {},
+    }, E)
+    for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
         state[key] = state[key] or {}
     end
     state.nextId = state.nextId or 1
@@ -61,36 +58,25 @@ function E.new(cfg, state, io, modules)
     self.byAddress = self.U.index(self.arrays, 'address')
     return self
 end
+
 function E:items(address)
-    local counts = self.I.inventory(self.io.proxy(address).getItemsInNetwork(), {})
+    local counts = self.I.inventory(self.io.proxy(address).getItemsInNetwork())
     return counts
 end
 
 function E:gate(c, closed)
-    self.closed[c.id] = closed
-    local locked = self.stopping or false
-    for _, other in ipairs(self.cfg.channels) do
-        if
-            other.redstone == c.redstone
-            and other.gateSide == c.gateSide
-            and self.closed[other.id] ~= false
-        then
-            locked = true
-        end
-    end
-    self.gateOutputs = self.gateOutputs or {}
-    local key = c.redstone .. ':' .. c.gateSide
-    if self.gateOutputs[key] ~= locked then
+    local locked = self.stopping or closed
+    if self.gateOutput ~= locked then
         self.io.proxy(c.redstone).setOutput(c.gateSide, locked and 15 or 0)
-        self.gateOutputs[key] = locked
+        self.gateOutput = locked
     end
 end
+
 function E:requestStop()
     self.stopping = true
-    for _, c in ipairs(self.cfg.channels) do
-        self:gate(c, true)
-    end
+    self:gate(self.cfg.channels[1], true)
 end
+
 function E:hold(a)
     local p = self.io.proxy(a.address)
     if p.isWorkAllowed() then
@@ -98,11 +84,10 @@ function E:hold(a)
     end
     return not p.hasWork()
 end
+
 function E:pause()
-    self.gateOutputs = {}
-    for _, c in ipairs(self.cfg.channels) do
-        pcall(self.gate, self, c, true)
-    end
+    self.gateOutput = nil
+    pcall(self.gate, self, self.cfg.channels[1], true)
     for _, a in ipairs(self.arrays) do
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
@@ -111,6 +96,7 @@ function E:pause()
     end
     self.save()
 end
+
 function E:catalogsRead()
     for _, c in ipairs(self.cfg.channels) do
         local patterns = {}
@@ -126,6 +112,7 @@ function E:catalogsRead()
         self.catalogs[c.id] = self.I.catalog(patterns)
     end
 end
+
 function E:check()
     self:catalogsRead()
     local needed = 0
@@ -174,6 +161,7 @@ function E:check()
     )
     return true
 end
+
 function E:start()
     self:pause()
     self:check()
@@ -192,6 +180,7 @@ function E:start()
     self.ready = false
     self.save()
 end
+
 function E:channel(c)
     if self.s.admission or #self.s.queue > 0 then
         self:gate(c, true)
@@ -229,7 +218,8 @@ function E:channel(c)
     self.settled[c.id] = nil
     self.save()
 end
-function E:remaining(a, s)
+
+function E:remaining(s)
     local b = s.batch
     if not b or not b.granted then
         return {}
@@ -264,6 +254,7 @@ function E:remaining(a, s)
     end
     return result
 end
+
 function E:resources()
     self.reserved = {}
     self.waiting = {}
@@ -271,7 +262,7 @@ function E:resources()
         local s = self.s.arrays[a.address]
         local b = s.batch
         if b then
-            self.U.add(self.reserved, self:remaining(a, s))
+            self.U.add(self.reserved, self:remaining(s))
             if
                 b.phase ~= 'collect'
                 and not b.granted
@@ -290,6 +281,7 @@ function E:resources()
     end
     assert(self.U.total(self.stock) <= self.cfg.fieldLimit, '凝聚物库存超过场强容量')
 end
+
 function E:grant(b)
     if b.granted then
         return true
@@ -306,6 +298,7 @@ function E:grant(b)
     self.save()
     return true
 end
+
 function E:beeCells(a)
     local cells = {}
     for _, c in ipairs(self.pools[a.beePool].cells) do
@@ -313,6 +306,7 @@ function E:beeCells(a)
     end
     return cells
 end
+
 function E:beeAccess(a, c)
     for _, box in ipairs(a.beeBoxes) do
         if box.box == c.box then
@@ -321,6 +315,7 @@ function E:beeAccess(a, c)
     end
     error('阵列缺少蜂群箱连接：' .. a.address .. ' / 箱子 ' .. c.box)
 end
+
 function E:beeCount(a, c, value)
     local counts = self.s.poolCounts[a.beePool] or {}
     self.s.poolCounts[a.beePool] = counts
@@ -336,6 +331,7 @@ function E:beeCount(a, c, value)
     end
     return counts[key] or 1
 end
+
 function E:borrow(a, s, tier)
     if s.lease then
         return s.lease[tier] ~= nil
@@ -409,7 +405,7 @@ function E:finishSample(a, deadline)
         workers = self.observations[a.address] or {}
     end
     local sample = { at = math.max(self.now, self.io.time()), finish = last.finish, nodes = {} }
-    for _, w in ipairs(workers) do
+    for _, w in pairs(workers) do
         if w.progress < last.start then
             return
         end
@@ -419,6 +415,7 @@ function E:finishSample(a, deadline)
         return sample
     end
 end
+
 function E:awaitFinishing(order, eligible)
     local wait = self.finishWait
     if not wait then
@@ -497,6 +494,7 @@ function E:awaitFinishing(order, eligible)
     )
     return true
 end
+
 function E:collections()
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
@@ -514,6 +512,7 @@ function E:collections()
         end
     end
 end
+
 function E:collectOrder(order, kind, idle)
     local selected
     for _, a in ipairs(self.arrays) do
@@ -543,7 +542,7 @@ function E:collectOrder(order, kind, idle)
     end
     local s = self.s.arrays[selected.address]
     local b = s.batch
-        or { key = order.key, count = 0, done = 0, workers = {}, collection = { types = {}, elapsed = 0 } }
+        or { key = order.key, count = 0, workers = {}, collection = { types = {}, elapsed = 0 } }
     local used = {}
     for _, w in ipairs(b.workers) do
         used[w.address] = true
@@ -560,8 +559,7 @@ function E:collectOrder(order, kind, idle)
             '等待算力奇点收集批次结束（没有空闲节点）'
         return
     end
-    b.workers[#b.workers + 1] =
-        { address = node.address, key = order.key, count = order.count, limit = order.count }
+    b.workers[#b.workers + 1] = { address = node.address, key = order.key, count = order.count }
     b.count = b.count + order.count
     b.collection.types[kind] = true
     b.phase = 'admit'
@@ -569,7 +567,6 @@ function E:collectOrder(order, kind, idle)
     s.batch = b
     s.blocked = nil
     self.s.admission = {
-        key = order.key,
         count = order.count,
         members = { selected.address },
         node = node.address,
@@ -578,6 +575,7 @@ function E:collectOrder(order, kind, idle)
     self.finishWait = nil
     self.save()
 end
+
 function E:schedule()
     local order = self.s.queue[1]
     if not order or self.s.admission then
@@ -640,8 +638,7 @@ function E:schedule()
     local index = 0
     local members = {}
     for _, a in ipairs(chosen) do
-        local b =
-            { key = order.key, count = 0, done = 0, workers = {}, phase = 'admit', admitting = true }
+        local b = { key = order.key, count = 0, workers = {}, phase = 'admit', admitting = true }
         for _, n in ipairs(a.nodes) do
             if index < active then
                 index = index + 1
@@ -651,7 +648,7 @@ function E:schedule()
                     count <= 2147483647,
                     '每节点分配份数超过可设置的并行上限，请增加节点或减少单次下单数量'
                 )
-                b.workers[#b.workers + 1] = { address = n.address, count = count, limit = count }
+                b.workers[#b.workers + 1] = { address = n.address, count = count }
                 b.count = b.count + count
             end
         end
@@ -660,10 +657,11 @@ function E:schedule()
         members[#members + 1] = a.address
     end
     -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
-    self.s.admission = { key = order.key, count = order.count, members = members }
+    self.s.admission = { count = order.count, members = members }
     self.s.queue = {}
     self.save()
 end
+
 function E:admissionTick()
     local admission = self.s.admission
     if not admission then
@@ -703,6 +701,7 @@ function E:admissionTick()
     self.s.admission = nil
     self.save()
 end
+
 function E:filters(a, unit)
     local d = self.io.proxy(a.diode)
     assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
@@ -725,6 +724,7 @@ function E:filters(a, unit)
     end
     self.filterNames[a.address] = names
 end
+
 function E:health(a)
     if self.now - (self.healthAt[a.address] or -math.huge) < 10 then
         return
@@ -742,6 +742,7 @@ function E:health(a)
     end
     self.healthAt[a.address] = self.now
 end
+
 function E:support(a, meta)
     local bands = {}
     for _, b in ipairs(self.cfg.bands) do
@@ -759,6 +760,7 @@ function E:support(a, meta)
         self.N.tier(s.tier, cells)
     end
 end
+
 function E:bees(a, s, want)
     local n = self.io.proxy(a.nodes[1].address)
     local provided = n.getProvidedTier()
@@ -893,15 +895,15 @@ function E:recover(a, s)
                 '节点配方与续做记录不一致'
             )
             total = total + count
-            workers[#workers + 1] = { address = node.address, count = count, limit = count }
+            workers[#workers + 1] = { address = node.address, count = count }
         end
     end
     assert(total <= b.count, '节点加工份数与剩余原料份数之和超过订单份数')
-    b.done = b.count - total
     b.workers = workers
     b.reference = nil
     self.save()
 end
+
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
@@ -910,6 +912,9 @@ function E:array(a)
         self.observations[a.address] = nil
     end
     if not b then
+        if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
+            return
+        end
         self:hold(a)
         self.status[a.address] = s.blocked or '空闲'
         return
@@ -935,10 +940,9 @@ function E:array(a)
                     n.setWorkAllowed(false)
                     local count = n.getParallelRecipesInProgress()
                     assert(
-                        n.getWorkProgress() == 0 and count == w.limit,
+                        n.getWorkProgress() == 0 and count == w.count,
                         '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
                     )
-                    w.count = count
                     assigned = assigned + count
                     local required = n.getRequiredCondensate()
                     local steps = self.N.steps(n.getRecipeSteps())
@@ -960,7 +964,8 @@ function E:array(a)
                         local own = self.s.patterns[w.key]
                         assert(
                             not own.unit
-                                or self.U.equal(own.unit, unit) and self.U.equal(own.steps, steps),
+                                or self.U.equal(own.unit, unit)
+                                    and self.U.equal(own.steps, steps),
                             '算力奇点配方与已记录的处理样板不一致'
                         )
                         own.unit, own.steps = unit, steps
@@ -968,7 +973,7 @@ function E:array(a)
                     end
                 else
                     n.setMinParallel(1)
-                    n.setMaxParallel(w.limit or w.count)
+                    n.setMaxParallel(w.count)
                     n.setWorkAllowed(true)
                     all = false
                 end
@@ -1011,7 +1016,7 @@ function E:array(a)
             end
             local parallel = 1
             for _, w in ipairs(b.workers) do
-                parallel = math.max(parallel, w.limit or w.count)
+                parallel = math.max(parallel, w.count)
             end
             local candidate = self.N.fastTier(meta.steps, cells, ceiling, parallel)
             if candidate and not self:bees(a, s, candidate) then
@@ -1047,12 +1052,12 @@ function E:array(a)
                     workers[#workers + 1] =
                         { progress = progress, tier = tier, address = w.address }
                     self.observations[a.address][index] = {
+                        address = w.address,
                         progress = progress,
                         tier = tier,
                         parallel = w.count,
                         length = meta.steps[#meta.steps].finish,
                         fast = b.fixed ~= nil,
-                        upper = false,
                     }
                 end
             end
@@ -1113,6 +1118,7 @@ function E:array(a)
         self.save()
     end
 end
+
 function E:drain()
     local failed, reason = next(self.errors)
     if failed then
@@ -1142,6 +1148,7 @@ function E:drain()
     end
     return true
 end
+
 function E:tick()
     self.now = self.io.time()
     if self.now - (self.fieldHealthAt or -math.huge) >= 10 then

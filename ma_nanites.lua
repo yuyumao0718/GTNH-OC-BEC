@@ -3,6 +3,7 @@ local L = {}
 local function integer(n)
     return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
 end
+
 function L.steps(raw)
     local result = {}
     for _, s in pairs(raw or {}) do
@@ -43,6 +44,7 @@ function L.choose(workers, previous, length)
     end
     return eligible or lowest
 end
+
 function L.tier(required, cells)
     local selected
     for tier in pairs(cells) do
@@ -52,6 +54,7 @@ function L.tier(required, cells)
     end
     return assert(selected, '未配置能够满足 T' .. required .. ' 的蜂群')
 end
+
 function L.requested(steps, progress)
     for _, s in ipairs(steps) do
         if progress >= s.start and progress < s.finish then
@@ -59,6 +62,7 @@ function L.requested(steps, progress)
         end
     end
 end
+
 function L.fastTier(steps, cells, counts, parallel)
     local low, high = 10, 1
     for _, s in ipairs(steps) do

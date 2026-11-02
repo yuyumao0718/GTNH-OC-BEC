@@ -6,148 +6,104 @@ local function field(key, label, kind, default, extra)
     end
     return f
 end
+
 local function list(key, label, fields)
     return field(key, label, 'list', nil, { fields = fields })
 end
+
 local function ref(key, label, source)
     return field(key, label, 'choice', '', { source = source })
 end
+
 local function num(key, label, default, lo, hi)
     return field(key, label, 'number', default, { lo = lo or 0, hi = hi or 2147483647 })
 end
+
 local function dev(key, label, kind)
     return ref(key, label, 'device:' .. kind)
 end
+
 local function side(key, label)
     return num(key, label, 0, 0, 5)
 end
-local function id()
+
+local function idField()
     return field('id', '名称 / ID', 'text', '')
 end
 C.schema = {
     dev('storage', '共享约束场', 'bec_storage'),
     num('fieldLimit', '约束场强度 L', 1000000000000, 1, 9007199254740991),
     num('singularityWait', '算力奇点等待阈值（秒）', 300, 1),
-    list(
-        'inventories',
-        '库存位置',
-        {
-            id(),
-            dev('transposer', '读取库存的转运器', 'transposer'),
-            side('side', '库存方向'),
-        }
-    ),
-    list(
-        'routes',
-        '元件搬运路线',
-        {
-            id(),
-            list('steps', '顺序步骤', {
-                dev('transposer', '搬运用转运器', 'transposer'),
-                ref('from', '来源库存', 'inventories'),
-                side('fromSide', '来源方向'),
-                ref('to', '目标库存', 'inventories'),
-                side('toSide', '目标方向'),
-                num('slot', '中转目标槽（末步忽略）', 1, 1),
-            }),
-        }
-    ),
-    list(
-        'channels',
-        'AE 接单通道',
-        {
-            id(),
-            list(
-                'patterns',
-                '主网样板接口列表',
-                { dev('address', '样板接口', 'pattern'), num(
-                    'slots',
-                    '样板槽数',
-                    36,
-                    1,
-                    128
-                ) }
-            ),
-            dev('buffer', '公共原料子网 ME 控制器', 'buffer'),
-            dev('redstone', '接单红石 I/O', 'redstone'),
-            side('gateSide', '红石输出方向'),
-        }
-    ),
-    list(
-        'beePools',
-        '共享蜂群池',
-        {
-            id(),
-            list(
-                'cells',
-                '蜂群元件',
-                {
-                    num('tier', '等级', 1, 1, 10),
-                    num('box', '箱子编号', 1, 1),
-                    num('slot', '箱内固定槽位', 1, 1),
-                }
-            ),
-        }
-    ),
-    list(
-        'arrays',
-        '观测阵列',
-        {
-            dev('address', '观测阵列', 'assembler'),
-            field('enabled', '启用', 'boolean', true),
-            dev('diode', '麦克斯韦门', 'bec_diode'),
-            list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
-            ref('beePool', '使用的蜂群池', 'beePools'),
-            list(
-                'beeBoxes',
-                '蜂群箱连接',
-                {
-                    num('box', '箱子编号', 1, 1),
-                    ref('inventory', '蜂群箱库存位置', 'inventories'),
-                    ref('load', '装载路线', 'routes'),
-                    ref('unload', '回收路线', 'routes'),
-                }
-            ),
-        }
-    ),
-    list(
-        'generators',
-        '纠缠装置',
-        { dev('address', '纠缠装置', 'generator'), ref(
-            'feed',
-            '纠缠装置原料子网',
-            'feeds'
-        ) }
-    ),
-    list(
-        'feeds',
-        '纠缠装置供料组',
-        {
-            id(),
-            ref('io', '主网补库 ME-IO 端口', 'inventories'),
-            num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
-            num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
-            list(
-                'cells',
-                '分区流体元件',
-                {
-                    ref('material', '流体', 'materials'),
-                    num('slot', '驱动器槽位', 1, 1),
-                    ref('route', '补库元件搬运路线', 'routes'),
-                }
-            ),
-        }
-    ),
-    list(
-        'bands',
-        '共享流体目标',
-        {
+    list('inventories', '库存位置', {
+        idField(),
+        dev('transposer', '读取库存的转运器', 'transposer'),
+        side('side', '库存方向'),
+    }),
+    list('routes', '元件搬运路线', {
+        idField(),
+        list('steps', '顺序步骤', {
+            dev('transposer', '搬运用转运器', 'transposer'),
+            ref('from', '来源库存', 'inventories'),
+            side('fromSide', '来源方向'),
+            ref('to', '目标库存', 'inventories'),
+            side('toSide', '目标方向'),
+            num('slot', '中转目标槽（末步忽略）', 1, 1),
+        }),
+    }),
+    list('channels', 'AE 接单通道', {
+        idField(),
+        list(
+            'patterns',
+            '主网样板接口列表',
+            { dev('address', '样板接口', 'pattern'), num('slots', '样板槽数', 36, 1, 128) }
+        ),
+        dev('buffer', '公共原料子网 ME 控制器', 'buffer'),
+        dev('redstone', '接单红石 I/O', 'redstone'),
+        side('gateSide', '红石输出方向'),
+    }),
+    list('beePools', '共享蜂群池', {
+        idField(),
+        list('cells', '蜂群元件', {
+            num('tier', '等级', 1, 1, 10),
+            num('box', '箱子编号', 1, 1),
+            num('slot', '箱内固定槽位', 1, 1),
+        }),
+    }),
+    list('arrays', '观测阵列', {
+        dev('address', '观测阵列', 'assembler'),
+        field('enabled', '启用', 'boolean', true),
+        dev('diode', '麦克斯韦门', 'bec_diode'),
+        list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
+        ref('beePool', '使用的蜂群池', 'beePools'),
+        list('beeBoxes', '蜂群箱连接', {
+            num('box', '箱子编号', 1, 1),
+            ref('inventory', '蜂群箱库存位置', 'inventories'),
+            ref('load', '装载路线', 'routes'),
+            ref('unload', '回收路线', 'routes'),
+        }),
+    }),
+    list('generators', '纠缠装置', {
+        dev('address', '纠缠装置', 'generator'),
+        ref('feed', '纠缠装置原料子网', 'feeds'),
+    }),
+    list('feeds', '纠缠装置供料组', {
+        idField(),
+        ref('io', '主网补库 ME-IO 端口', 'inventories'),
+        num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
+        num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
+        list('cells', '分区流体元件', {
             ref('material', '流体', 'materials'),
-            num('low', '下限 L', 1000000, 0, 9007199254740991),
-            num('high', '目标 L', 2000000, 1, 9007199254740991),
-        }
-    ),
+            num('slot', '驱动器槽位', 1, 1),
+            ref('route', '补库元件搬运路线', 'routes'),
+        }),
+    }),
+    list('bands', '共享流体目标', {
+        ref('material', '流体', 'materials'),
+        num('low', '下限 L', 1000000, 0, 9007199254740991),
+        num('high', '目标 L', 2000000, 1, 9007199254740991),
+    }),
 }
+
 function C.newRecord(fields)
     local r = {}
     for _, f in ipairs(fields) do
@@ -155,6 +111,7 @@ function C.newRecord(fields)
     end
     return r
 end
+
 function C.defaults(cfg)
     cfg = cfg or {}
     local function fill(fields, value, path)
@@ -186,6 +143,7 @@ function C.defaults(cfg)
     fill(C.schema, cfg, '')
     return cfg
 end
+
 function C.scan(component, cfg)
     local devices = {}
     for a, k in component.list() do
@@ -225,6 +183,7 @@ function C.scan(component, cfg)
     end
     return devices
 end
+
 function C.matches(d, kind)
     if kind == 'assembler' then
         return d.name == 'multi.bec.assembler'
@@ -240,6 +199,7 @@ function C.matches(d, kind)
     end
     return d.kind == kind
 end
+
 function C.unboundNodes(cfg, devices)
     local used = {}
     for _, a in ipairs(cfg.arrays) do
@@ -255,6 +215,7 @@ function C.unboundNodes(cfg, devices)
     end
     return nodes
 end
+
 function C.bindNodes(cfg, array, devices)
     local nodes = C.unboundNodes(cfg, devices)
     if #array.nodes + #nodes > 16 then
@@ -266,6 +227,7 @@ function C.bindNodes(cfg, array, devices)
     end
     return true, '已绑定 ' .. #nodes .. ' 个节点；本阵列共 ' .. #array.nodes .. ' 个'
 end
+
 function C.unboundDoors(cfg, devices)
     local used = {}
     for _, a in ipairs(cfg.arrays) do
@@ -279,6 +241,7 @@ function C.unboundDoors(cfg, devices)
     end
     return doors
 end
+
 function C.validate(cfg, component, U)
     local function basic(fields, value, path)
         for _, f in ipairs(fields) do
@@ -319,16 +282,16 @@ function C.validate(cfg, component, U)
             seen[x.id] = true
         end
     end
-    local nodes, ports, owners, arrays, diodes, buffers = {}, {}, {}, {}, {}, {}
-    local function port(id, owner, shared)
+    local nodes, ports, owners, arrays, diodes = {}, {}, {}, {}, {}
+    local function port(id)
         assert(inv[id], '未知库存位置：' .. tostring(id))
-        assert(not ports[id] or shared and ports[id] == owner, 'ME-IO 端口重复分配：' .. id)
-        ports[id] = owner
+        assert(not ports[id], 'ME-IO 端口重复分配：' .. id)
+        ports[id] = true
     end
-    local function own(id, slot, owner)
+    local function own(id, slot)
         local key = id .. ':' .. slot
         assert(not owners[key], '元件槽位重复：' .. key)
-        owners[key] = owner
+        owners[key] = true
     end
     for _, r in ipairs(cfg.routes) do
         assert(#r.steps > 0, '路线没有步骤：' .. r.id)
@@ -361,11 +324,6 @@ function C.validate(cfg, component, U)
     local patterns = {}
     for _, c in ipairs(cfg.channels) do
         assert(#c.patterns > 0, '接单通道至少选择一个主网样板接口')
-        assert(
-            not buffers[c.buffer],
-            '同一接收子网请配置为一条通道，将主网接口加入该通道的样板接口列表'
-        )
-        buffers[c.buffer] = 'channel'
         for _, p in ipairs(c.patterns) do
             assert(not patterns[p.address], '样板接口重复分配：' .. p.address)
             patterns[p.address] = true
@@ -400,7 +358,7 @@ function C.validate(cfg, component, U)
                 if c.box == box.box then
                     used = true
                     if not boxPools[box.inventory] then
-                        own(box.inventory, c.slot, key)
+                        own(box.inventory, c.slot)
                     end
                 end
             end
@@ -419,7 +377,7 @@ function C.validate(cfg, component, U)
                         '同一阵列的蜂群箱须共用装载端口和回收端口'
                     )
                 else
-                    port(target, a.address)
+                    port(target)
                     ends[mode] = target
                 end
             end
@@ -448,7 +406,7 @@ function C.validate(cfg, component, U)
         gen[g.address] = g.feed
     end
     for _, f in ipairs(cfg.feeds) do
-        port(f.io, f.id)
+        port(f.io)
         local has = false
         for _, g in ipairs(cfg.generators) do
             if g.feed == f.id then
@@ -468,7 +426,7 @@ function C.validate(cfg, component, U)
                 r.steps[#r.steps].to == f.io,
                 '补库路线的终点必须是所选的 ME-IO 端口'
             )
-            own(r.steps[1].from, c.slot, f.id)
+            own(r.steps[1].from, c.slot)
         end
     end
     if component then

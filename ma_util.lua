@@ -9,6 +9,7 @@ function U.copy(v)
     end
     return r
 end
+
 function U.equal(a, b)
     if type(a) ~= type(b) then
         return false
@@ -28,12 +29,14 @@ function U.equal(a, b)
     end
     return true
 end
+
 function U.integer(n, lo, hi)
     return type(n) == 'number'
         and n == math.floor(n)
         and n >= (lo or 0)
         and n <= (hi or 9007199254740991)
 end
+
 function U.add(a, b, m)
     for k, v in pairs(b or {}) do
         a[k] = (a[k] or 0) + v * (m or 1)
@@ -41,6 +44,7 @@ function U.add(a, b, m)
     end
     return a
 end
+
 function U.total(a)
     local n = 0
     for _, v in pairs(a or {}) do
@@ -50,6 +54,7 @@ function U.total(a)
     assert(U.integer(n), '总量超出精确整数范围')
     return n
 end
+
 function U.fits(stock, need)
     for k, v in pairs(need or {}) do
         if (stock[k] or 0) < v then
@@ -58,9 +63,11 @@ function U.fits(stock, need)
     end
     return true
 end
+
 function U.scale(a, n)
     return U.add({}, a, n)
 end
+
 function U.keys(t)
     local r = {}
     for k in pairs(t) do
@@ -69,6 +76,7 @@ function U.keys(t)
     table.sort(r)
     return r
 end
+
 function U.index(list, key)
     local r = {}
     for _, v in ipairs(list or {}) do

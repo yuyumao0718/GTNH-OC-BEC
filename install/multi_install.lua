@@ -46,9 +46,11 @@ local function screen()
     end
     return gui
 end
+
 local function compatible(cfg, state)
     return Recovery.check(cfg, state, U, component.proxy, M)
 end
+
 local function configure()
     local readable, cfg = pcall(function()
         return C.defaults(store.read('multi.setup') or store.read('multi.cfg'))
@@ -115,7 +117,7 @@ local ok, err = xpcall(function()
         end
         if command == 'recover' then
             engine:pause()
-            local held = false
+            local held
             repeat
                 held = true
                 for _, a in ipairs(engine.arrays) do
@@ -224,148 +226,104 @@ local function field(key, label, kind, default, extra)
     end
     return f
 end
+
 local function list(key, label, fields)
     return field(key, label, 'list', nil, { fields = fields })
 end
+
 local function ref(key, label, source)
     return field(key, label, 'choice', '', { source = source })
 end
+
 local function num(key, label, default, lo, hi)
     return field(key, label, 'number', default, { lo = lo or 0, hi = hi or 2147483647 })
 end
+
 local function dev(key, label, kind)
     return ref(key, label, 'device:' .. kind)
 end
+
 local function side(key, label)
     return num(key, label, 0, 0, 5)
 end
-local function id()
+
+local function idField()
     return field('id', '名称 / ID', 'text', '')
 end
 C.schema = {
     dev('storage', '共享约束场', 'bec_storage'),
     num('fieldLimit', '约束场强度 L', 1000000000000, 1, 9007199254740991),
     num('singularityWait', '算力奇点等待阈值（秒）', 300, 1),
-    list(
-        'inventories',
-        '库存位置',
-        {
-            id(),
-            dev('transposer', '读取库存的转运器', 'transposer'),
-            side('side', '库存方向'),
-        }
-    ),
-    list(
-        'routes',
-        '元件搬运路线',
-        {
-            id(),
-            list('steps', '顺序步骤', {
-                dev('transposer', '搬运用转运器', 'transposer'),
-                ref('from', '来源库存', 'inventories'),
-                side('fromSide', '来源方向'),
-                ref('to', '目标库存', 'inventories'),
-                side('toSide', '目标方向'),
-                num('slot', '中转目标槽（末步忽略）', 1, 1),
-            }),
-        }
-    ),
-    list(
-        'channels',
-        'AE 接单通道',
-        {
-            id(),
-            list(
-                'patterns',
-                '主网样板接口列表',
-                { dev('address', '样板接口', 'pattern'), num(
-                    'slots',
-                    '样板槽数',
-                    36,
-                    1,
-                    128
-                ) }
-            ),
-            dev('buffer', '公共原料子网 ME 控制器', 'buffer'),
-            dev('redstone', '接单红石 I/O', 'redstone'),
-            side('gateSide', '红石输出方向'),
-        }
-    ),
-    list(
-        'beePools',
-        '共享蜂群池',
-        {
-            id(),
-            list(
-                'cells',
-                '蜂群元件',
-                {
-                    num('tier', '等级', 1, 1, 10),
-                    num('box', '箱子编号', 1, 1),
-                    num('slot', '箱内固定槽位', 1, 1),
-                }
-            ),
-        }
-    ),
-    list(
-        'arrays',
-        '观测阵列',
-        {
-            dev('address', '观测阵列', 'assembler'),
-            field('enabled', '启用', 'boolean', true),
-            dev('diode', '麦克斯韦门', 'bec_diode'),
-            list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
-            ref('beePool', '使用的蜂群池', 'beePools'),
-            list(
-                'beeBoxes',
-                '蜂群箱连接',
-                {
-                    num('box', '箱子编号', 1, 1),
-                    ref('inventory', '蜂群箱库存位置', 'inventories'),
-                    ref('load', '装载路线', 'routes'),
-                    ref('unload', '回收路线', 'routes'),
-                }
-            ),
-        }
-    ),
-    list(
-        'generators',
-        '纠缠装置',
-        { dev('address', '纠缠装置', 'generator'), ref(
-            'feed',
-            '纠缠装置原料子网',
-            'feeds'
-        ) }
-    ),
-    list(
-        'feeds',
-        '纠缠装置供料组',
-        {
-            id(),
-            ref('io', '主网补库 ME-IO 端口', 'inventories'),
-            num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
-            num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
-            list(
-                'cells',
-                '分区流体元件',
-                {
-                    ref('material', '流体', 'materials'),
-                    num('slot', '驱动器槽位', 1, 1),
-                    ref('route', '补库元件搬运路线', 'routes'),
-                }
-            ),
-        }
-    ),
-    list(
-        'bands',
-        '共享流体目标',
-        {
+    list('inventories', '库存位置', {
+        idField(),
+        dev('transposer', '读取库存的转运器', 'transposer'),
+        side('side', '库存方向'),
+    }),
+    list('routes', '元件搬运路线', {
+        idField(),
+        list('steps', '顺序步骤', {
+            dev('transposer', '搬运用转运器', 'transposer'),
+            ref('from', '来源库存', 'inventories'),
+            side('fromSide', '来源方向'),
+            ref('to', '目标库存', 'inventories'),
+            side('toSide', '目标方向'),
+            num('slot', '中转目标槽（末步忽略）', 1, 1),
+        }),
+    }),
+    list('channels', 'AE 接单通道', {
+        idField(),
+        list(
+            'patterns',
+            '主网样板接口列表',
+            { dev('address', '样板接口', 'pattern'), num('slots', '样板槽数', 36, 1, 128) }
+        ),
+        dev('buffer', '公共原料子网 ME 控制器', 'buffer'),
+        dev('redstone', '接单红石 I/O', 'redstone'),
+        side('gateSide', '红石输出方向'),
+    }),
+    list('beePools', '共享蜂群池', {
+        idField(),
+        list('cells', '蜂群元件', {
+            num('tier', '等级', 1, 1, 10),
+            num('box', '箱子编号', 1, 1),
+            num('slot', '箱内固定槽位', 1, 1),
+        }),
+    }),
+    list('arrays', '观测阵列', {
+        dev('address', '观测阵列', 'assembler'),
+        field('enabled', '启用', 'boolean', true),
+        dev('diode', '麦克斯韦门', 'bec_diode'),
+        list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
+        ref('beePool', '使用的蜂群池', 'beePools'),
+        list('beeBoxes', '蜂群箱连接', {
+            num('box', '箱子编号', 1, 1),
+            ref('inventory', '蜂群箱库存位置', 'inventories'),
+            ref('load', '装载路线', 'routes'),
+            ref('unload', '回收路线', 'routes'),
+        }),
+    }),
+    list('generators', '纠缠装置', {
+        dev('address', '纠缠装置', 'generator'),
+        ref('feed', '纠缠装置原料子网', 'feeds'),
+    }),
+    list('feeds', '纠缠装置供料组', {
+        idField(),
+        ref('io', '主网补库 ME-IO 端口', 'inventories'),
+        num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
+        num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
+        list('cells', '分区流体元件', {
             ref('material', '流体', 'materials'),
-            num('low', '下限 L', 1000000, 0, 9007199254740991),
-            num('high', '目标 L', 2000000, 1, 9007199254740991),
-        }
-    ),
+            num('slot', '驱动器槽位', 1, 1),
+            ref('route', '补库元件搬运路线', 'routes'),
+        }),
+    }),
+    list('bands', '共享流体目标', {
+        ref('material', '流体', 'materials'),
+        num('low', '下限 L', 1000000, 0, 9007199254740991),
+        num('high', '目标 L', 2000000, 1, 9007199254740991),
+    }),
 }
+
 function C.newRecord(fields)
     local r = {}
     for _, f in ipairs(fields) do
@@ -373,6 +331,7 @@ function C.newRecord(fields)
     end
     return r
 end
+
 function C.defaults(cfg)
     cfg = cfg or {}
     local function fill(fields, value, path)
@@ -404,6 +363,7 @@ function C.defaults(cfg)
     fill(C.schema, cfg, '')
     return cfg
 end
+
 function C.scan(component, cfg)
     local devices = {}
     for a, k in component.list() do
@@ -443,6 +403,7 @@ function C.scan(component, cfg)
     end
     return devices
 end
+
 function C.matches(d, kind)
     if kind == 'assembler' then
         return d.name == 'multi.bec.assembler'
@@ -458,6 +419,7 @@ function C.matches(d, kind)
     end
     return d.kind == kind
 end
+
 function C.unboundNodes(cfg, devices)
     local used = {}
     for _, a in ipairs(cfg.arrays) do
@@ -473,6 +435,7 @@ function C.unboundNodes(cfg, devices)
     end
     return nodes
 end
+
 function C.bindNodes(cfg, array, devices)
     local nodes = C.unboundNodes(cfg, devices)
     if #array.nodes + #nodes > 16 then
@@ -484,6 +447,7 @@ function C.bindNodes(cfg, array, devices)
     end
     return true, '已绑定 ' .. #nodes .. ' 个节点；本阵列共 ' .. #array.nodes .. ' 个'
 end
+
 function C.unboundDoors(cfg, devices)
     local used = {}
     for _, a in ipairs(cfg.arrays) do
@@ -497,6 +461,7 @@ function C.unboundDoors(cfg, devices)
     end
     return doors
 end
+
 function C.validate(cfg, component, U)
     local function basic(fields, value, path)
         for _, f in ipairs(fields) do
@@ -537,16 +502,16 @@ function C.validate(cfg, component, U)
             seen[x.id] = true
         end
     end
-    local nodes, ports, owners, arrays, diodes, buffers = {}, {}, {}, {}, {}, {}
-    local function port(id, owner, shared)
+    local nodes, ports, owners, arrays, diodes = {}, {}, {}, {}, {}
+    local function port(id)
         assert(inv[id], '未知库存位置：' .. tostring(id))
-        assert(not ports[id] or shared and ports[id] == owner, 'ME-IO 端口重复分配：' .. id)
-        ports[id] = owner
+        assert(not ports[id], 'ME-IO 端口重复分配：' .. id)
+        ports[id] = true
     end
-    local function own(id, slot, owner)
+    local function own(id, slot)
         local key = id .. ':' .. slot
         assert(not owners[key], '元件槽位重复：' .. key)
-        owners[key] = owner
+        owners[key] = true
     end
     for _, r in ipairs(cfg.routes) do
         assert(#r.steps > 0, '路线没有步骤：' .. r.id)
@@ -579,11 +544,6 @@ function C.validate(cfg, component, U)
     local patterns = {}
     for _, c in ipairs(cfg.channels) do
         assert(#c.patterns > 0, '接单通道至少选择一个主网样板接口')
-        assert(
-            not buffers[c.buffer],
-            '同一接收子网请配置为一条通道，将主网接口加入该通道的样板接口列表'
-        )
-        buffers[c.buffer] = 'channel'
         for _, p in ipairs(c.patterns) do
             assert(not patterns[p.address], '样板接口重复分配：' .. p.address)
             patterns[p.address] = true
@@ -618,7 +578,7 @@ function C.validate(cfg, component, U)
                 if c.box == box.box then
                     used = true
                     if not boxPools[box.inventory] then
-                        own(box.inventory, c.slot, key)
+                        own(box.inventory, c.slot)
                     end
                 end
             end
@@ -637,7 +597,7 @@ function C.validate(cfg, component, U)
                         '同一阵列的蜂群箱须共用装载端口和回收端口'
                     )
                 else
-                    port(target, a.address)
+                    port(target)
                     ends[mode] = target
                 end
             end
@@ -666,7 +626,7 @@ function C.validate(cfg, component, U)
         gen[g.address] = g.feed
     end
     for _, f in ipairs(cfg.feeds) do
-        port(f.io, f.id)
+        port(f.io)
         local has = false
         for _, g in ipairs(cfg.generators) do
             if g.feed == f.id then
@@ -686,7 +646,7 @@ function C.validate(cfg, component, U)
                 r.steps[#r.steps].to == f.io,
                 '补库路线的终点必须是所选的 ME-IO 端口'
             )
-            own(r.steps[1].from, c.slot, f.id)
+            own(r.steps[1].from, c.slot)
         end
     end
     if component then
@@ -740,32 +700,29 @@ local nodeErrors = {
     ['paused-immediate'] = '节点已被立即暂停',
     ['paused-step'] = '节点已在步骤结束时暂停',
 }
+
 function E.new(cfg, state, io, modules)
-    local self = setmetatable(
-        {
-            cfg = cfg,
-            s = state,
-            io = io,
-            U = modules.U,
-            I = modules.I,
-            N = modules.N,
-            M = modules.M,
-            status = {},
-            catalogs = {},
-            arrays = {},
-            errors = {},
-            observations = {},
-            provided = {},
-            now = 0,
-            closed = {},
-            settled = {},
-            filterNames = {},
-            healthAt = {},
-            collectAt = {},
-        },
-        E
-    )
-    for _, key in ipairs({ 'channels', 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
+    local self = setmetatable({
+        cfg = cfg,
+        s = state,
+        io = io,
+        U = modules.U,
+        I = modules.I,
+        N = modules.N,
+        M = modules.M,
+        status = {},
+        catalogs = {},
+        arrays = {},
+        errors = {},
+        observations = {},
+        provided = {},
+        now = 0,
+        settled = {},
+        filterNames = {},
+        healthAt = {},
+        collectAt = {},
+    }, E)
+    for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
         state[key] = state[key] or {}
     end
     state.nextId = state.nextId or 1
@@ -783,36 +740,25 @@ function E.new(cfg, state, io, modules)
     self.byAddress = self.U.index(self.arrays, 'address')
     return self
 end
+
 function E:items(address)
-    local counts = self.I.inventory(self.io.proxy(address).getItemsInNetwork(), {})
+    local counts = self.I.inventory(self.io.proxy(address).getItemsInNetwork())
     return counts
 end
 
 function E:gate(c, closed)
-    self.closed[c.id] = closed
-    local locked = self.stopping or false
-    for _, other in ipairs(self.cfg.channels) do
-        if
-            other.redstone == c.redstone
-            and other.gateSide == c.gateSide
-            and self.closed[other.id] ~= false
-        then
-            locked = true
-        end
-    end
-    self.gateOutputs = self.gateOutputs or {}
-    local key = c.redstone .. ':' .. c.gateSide
-    if self.gateOutputs[key] ~= locked then
+    local locked = self.stopping or closed
+    if self.gateOutput ~= locked then
         self.io.proxy(c.redstone).setOutput(c.gateSide, locked and 15 or 0)
-        self.gateOutputs[key] = locked
+        self.gateOutput = locked
     end
 end
+
 function E:requestStop()
     self.stopping = true
-    for _, c in ipairs(self.cfg.channels) do
-        self:gate(c, true)
-    end
+    self:gate(self.cfg.channels[1], true)
 end
+
 function E:hold(a)
     local p = self.io.proxy(a.address)
     if p.isWorkAllowed() then
@@ -820,11 +766,10 @@ function E:hold(a)
     end
     return not p.hasWork()
 end
+
 function E:pause()
-    self.gateOutputs = {}
-    for _, c in ipairs(self.cfg.channels) do
-        pcall(self.gate, self, c, true)
-    end
+    self.gateOutput = nil
+    pcall(self.gate, self, self.cfg.channels[1], true)
     for _, a in ipairs(self.arrays) do
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
@@ -833,6 +778,7 @@ function E:pause()
     end
     self.save()
 end
+
 function E:catalogsRead()
     for _, c in ipairs(self.cfg.channels) do
         local patterns = {}
@@ -848,6 +794,7 @@ function E:catalogsRead()
         self.catalogs[c.id] = self.I.catalog(patterns)
     end
 end
+
 function E:check()
     self:catalogsRead()
     local needed = 0
@@ -896,6 +843,7 @@ function E:check()
     )
     return true
 end
+
 function E:start()
     self:pause()
     self:check()
@@ -914,6 +862,7 @@ function E:start()
     self.ready = false
     self.save()
 end
+
 function E:channel(c)
     if self.s.admission or #self.s.queue > 0 then
         self:gate(c, true)
@@ -951,7 +900,8 @@ function E:channel(c)
     self.settled[c.id] = nil
     self.save()
 end
-function E:remaining(a, s)
+
+function E:remaining(s)
     local b = s.batch
     if not b or not b.granted then
         return {}
@@ -986,6 +936,7 @@ function E:remaining(a, s)
     end
     return result
 end
+
 function E:resources()
     self.reserved = {}
     self.waiting = {}
@@ -993,7 +944,7 @@ function E:resources()
         local s = self.s.arrays[a.address]
         local b = s.batch
         if b then
-            self.U.add(self.reserved, self:remaining(a, s))
+            self.U.add(self.reserved, self:remaining(s))
             if
                 b.phase ~= 'collect'
                 and not b.granted
@@ -1012,6 +963,7 @@ function E:resources()
     end
     assert(self.U.total(self.stock) <= self.cfg.fieldLimit, '凝聚物库存超过场强容量')
 end
+
 function E:grant(b)
     if b.granted then
         return true
@@ -1028,6 +980,7 @@ function E:grant(b)
     self.save()
     return true
 end
+
 function E:beeCells(a)
     local cells = {}
     for _, c in ipairs(self.pools[a.beePool].cells) do
@@ -1035,6 +988,7 @@ function E:beeCells(a)
     end
     return cells
 end
+
 function E:beeAccess(a, c)
     for _, box in ipairs(a.beeBoxes) do
         if box.box == c.box then
@@ -1043,6 +997,7 @@ function E:beeAccess(a, c)
     end
     error('阵列缺少蜂群箱连接：' .. a.address .. ' / 箱子 ' .. c.box)
 end
+
 function E:beeCount(a, c, value)
     local counts = self.s.poolCounts[a.beePool] or {}
     self.s.poolCounts[a.beePool] = counts
@@ -1058,6 +1013,7 @@ function E:beeCount(a, c, value)
     end
     return counts[key] or 1
 end
+
 function E:borrow(a, s, tier)
     if s.lease then
         return s.lease[tier] ~= nil
@@ -1131,7 +1087,7 @@ function E:finishSample(a, deadline)
         workers = self.observations[a.address] or {}
     end
     local sample = { at = math.max(self.now, self.io.time()), finish = last.finish, nodes = {} }
-    for _, w in ipairs(workers) do
+    for _, w in pairs(workers) do
         if w.progress < last.start then
             return
         end
@@ -1141,6 +1097,7 @@ function E:finishSample(a, deadline)
         return sample
     end
 end
+
 function E:awaitFinishing(order, eligible)
     local wait = self.finishWait
     if not wait then
@@ -1219,6 +1176,7 @@ function E:awaitFinishing(order, eligible)
     )
     return true
 end
+
 function E:collections()
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
@@ -1236,6 +1194,7 @@ function E:collections()
         end
     end
 end
+
 function E:collectOrder(order, kind, idle)
     local selected
     for _, a in ipairs(self.arrays) do
@@ -1265,7 +1224,7 @@ function E:collectOrder(order, kind, idle)
     end
     local s = self.s.arrays[selected.address]
     local b = s.batch
-        or { key = order.key, count = 0, done = 0, workers = {}, collection = { types = {}, elapsed = 0 } }
+        or { key = order.key, count = 0, workers = {}, collection = { types = {}, elapsed = 0 } }
     local used = {}
     for _, w in ipairs(b.workers) do
         used[w.address] = true
@@ -1282,8 +1241,7 @@ function E:collectOrder(order, kind, idle)
             '等待算力奇点收集批次结束（没有空闲节点）'
         return
     end
-    b.workers[#b.workers + 1] =
-        { address = node.address, key = order.key, count = order.count, limit = order.count }
+    b.workers[#b.workers + 1] = { address = node.address, key = order.key, count = order.count }
     b.count = b.count + order.count
     b.collection.types[kind] = true
     b.phase = 'admit'
@@ -1291,7 +1249,6 @@ function E:collectOrder(order, kind, idle)
     s.batch = b
     s.blocked = nil
     self.s.admission = {
-        key = order.key,
         count = order.count,
         members = { selected.address },
         node = node.address,
@@ -1300,6 +1257,7 @@ function E:collectOrder(order, kind, idle)
     self.finishWait = nil
     self.save()
 end
+
 function E:schedule()
     local order = self.s.queue[1]
     if not order or self.s.admission then
@@ -1362,8 +1320,7 @@ function E:schedule()
     local index = 0
     local members = {}
     for _, a in ipairs(chosen) do
-        local b =
-            { key = order.key, count = 0, done = 0, workers = {}, phase = 'admit', admitting = true }
+        local b = { key = order.key, count = 0, workers = {}, phase = 'admit', admitting = true }
         for _, n in ipairs(a.nodes) do
             if index < active then
                 index = index + 1
@@ -1373,7 +1330,7 @@ function E:schedule()
                     count <= 2147483647,
                     '每节点分配份数超过可设置的并行上限，请增加节点或减少单次下单数量'
                 )
-                b.workers[#b.workers + 1] = { address = n.address, count = count, limit = count }
+                b.workers[#b.workers + 1] = { address = n.address, count = count }
                 b.count = b.count + count
             end
         end
@@ -1382,10 +1339,11 @@ function E:schedule()
         members[#members + 1] = a.address
     end
     -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
-    self.s.admission = { key = order.key, count = order.count, members = members }
+    self.s.admission = { count = order.count, members = members }
     self.s.queue = {}
     self.save()
 end
+
 function E:admissionTick()
     local admission = self.s.admission
     if not admission then
@@ -1425,6 +1383,7 @@ function E:admissionTick()
     self.s.admission = nil
     self.save()
 end
+
 function E:filters(a, unit)
     local d = self.io.proxy(a.diode)
     assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
@@ -1447,6 +1406,7 @@ function E:filters(a, unit)
     end
     self.filterNames[a.address] = names
 end
+
 function E:health(a)
     if self.now - (self.healthAt[a.address] or -math.huge) < 10 then
         return
@@ -1464,6 +1424,7 @@ function E:health(a)
     end
     self.healthAt[a.address] = self.now
 end
+
 function E:support(a, meta)
     local bands = {}
     for _, b in ipairs(self.cfg.bands) do
@@ -1481,6 +1442,7 @@ function E:support(a, meta)
         self.N.tier(s.tier, cells)
     end
 end
+
 function E:bees(a, s, want)
     local n = self.io.proxy(a.nodes[1].address)
     local provided = n.getProvidedTier()
@@ -1615,15 +1577,15 @@ function E:recover(a, s)
                 '节点配方与续做记录不一致'
             )
             total = total + count
-            workers[#workers + 1] = { address = node.address, count = count, limit = count }
+            workers[#workers + 1] = { address = node.address, count = count }
         end
     end
     assert(total <= b.count, '节点加工份数与剩余原料份数之和超过订单份数')
-    b.done = b.count - total
     b.workers = workers
     b.reference = nil
     self.save()
 end
+
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
@@ -1632,6 +1594,9 @@ function E:array(a)
         self.observations[a.address] = nil
     end
     if not b then
+        if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
+            return
+        end
         self:hold(a)
         self.status[a.address] = s.blocked or '空闲'
         return
@@ -1657,10 +1622,9 @@ function E:array(a)
                     n.setWorkAllowed(false)
                     local count = n.getParallelRecipesInProgress()
                     assert(
-                        n.getWorkProgress() == 0 and count == w.limit,
+                        n.getWorkProgress() == 0 and count == w.count,
                         '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
                     )
-                    w.count = count
                     assigned = assigned + count
                     local required = n.getRequiredCondensate()
                     local steps = self.N.steps(n.getRecipeSteps())
@@ -1682,7 +1646,8 @@ function E:array(a)
                         local own = self.s.patterns[w.key]
                         assert(
                             not own.unit
-                                or self.U.equal(own.unit, unit) and self.U.equal(own.steps, steps),
+                                or self.U.equal(own.unit, unit)
+                                    and self.U.equal(own.steps, steps),
                             '算力奇点配方与已记录的处理样板不一致'
                         )
                         own.unit, own.steps = unit, steps
@@ -1690,7 +1655,7 @@ function E:array(a)
                     end
                 else
                     n.setMinParallel(1)
-                    n.setMaxParallel(w.limit or w.count)
+                    n.setMaxParallel(w.count)
                     n.setWorkAllowed(true)
                     all = false
                 end
@@ -1733,7 +1698,7 @@ function E:array(a)
             end
             local parallel = 1
             for _, w in ipairs(b.workers) do
-                parallel = math.max(parallel, w.limit or w.count)
+                parallel = math.max(parallel, w.count)
             end
             local candidate = self.N.fastTier(meta.steps, cells, ceiling, parallel)
             if candidate and not self:bees(a, s, candidate) then
@@ -1769,12 +1734,12 @@ function E:array(a)
                     workers[#workers + 1] =
                         { progress = progress, tier = tier, address = w.address }
                     self.observations[a.address][index] = {
+                        address = w.address,
                         progress = progress,
                         tier = tier,
                         parallel = w.count,
                         length = meta.steps[#meta.steps].finish,
                         fast = b.fixed ~= nil,
-                        upper = false,
                     }
                 end
             end
@@ -1835,6 +1800,7 @@ function E:array(a)
         self.save()
     end
 end
+
 function E:drain()
     local failed, reason = next(self.errors)
     if failed then
@@ -1864,6 +1830,7 @@ function E:drain()
     end
     return true
 end
+
 function E:tick()
     self.now = self.io.time()
     if self.now - (self.fieldHealthAt or -math.huge) >= 10 then
@@ -1947,6 +1914,7 @@ local function find(list, key, value)
         end
     end
 end
+
 local function unique(list, prefix)
     local n = 1
     while find(list, 'id', prefix .. n) do
@@ -1954,30 +1922,27 @@ local function unique(list, prefix)
     end
     return prefix .. n
 end
+
 function F.new(ui, cfg, component, save)
-    local self = setmetatable(
-        {
-            ui = ui,
-            cfg = cfg,
-            component = component,
-            save = save,
-            tab = 1,
-            pos = 1,
-            offset = 1,
-            selected = {},
-            grade = 1,
-            boxPage = 1,
-            fluidIndex = 1,
-            fluidPage = 1,
-            fluidKey = 'low',
-            extraBoxes = {},
-            expanded = {},
-            source = 1,
-            message = '修改记入草稿；按 S 校验并保存',
-            schema = {},
-        },
-        F
-    )
+    local self = setmetatable({
+        ui = ui,
+        cfg = cfg,
+        component = component,
+        save = save,
+        tab = 1,
+        pos = 1,
+        offset = 1,
+        selected = {},
+        grade = 1,
+        boxPage = 1,
+        fluidIndex = 1,
+        fluidPage = 1,
+        fluidKey = 'low',
+        extraBoxes = {},
+        expanded = {},
+        message = '修改记入草稿；按 S 校验并保存',
+        schema = {},
+    }, F)
     for _, f in ipairs(ui.C.schema) do
         self.schema[f.key] = f
     end
@@ -2005,12 +1970,14 @@ function F.new(ui, cfg, component, save)
     end
     return self
 end
+
 function F:changed()
     if self.save.draft then
         self.save.draft(self.cfg)
     end
     self.message = '修改已记入草稿；按 S 校验并保存后生效'
 end
+
 function F:record(section)
     local r = self.ui.C.newRecord(self.schema[section].fields)
     if r.id then
@@ -2030,12 +1997,15 @@ function F:record(section)
     end
     return r
 end
+
 function F:inventory(id)
     return find(self.cfg.inventories, 'id', id)
 end
+
 function F:route(id)
     return find(self.cfg.routes, 'id', id)
 end
+
 function F:removeUnusedInventory(id)
     if not id then
         return
@@ -2067,6 +2037,7 @@ function F:removeUnusedInventory(id)
         table.remove(self.cfg.inventories, i)
     end
 end
+
 function F:removeUnusedRoute(id)
     local r, i = find(self.cfg.routes, 'id', id)
     if not r then
@@ -2092,6 +2063,7 @@ function F:removeUnusedRoute(id)
         self:removeUnusedInventory(step.to)
     end
 end
+
 function F:position(inv, transposer, side)
     -- Update matching access to the same container, while retaining other transposers' faces.
     for _, r in ipairs(self.cfg.routes) do
@@ -2110,11 +2082,13 @@ function F:position(inv, transposer, side)
     end
     inv.transposer, inv.side = transposer, side
 end
+
 function F:newInventory(prefix)
     local x = { id = unique(self.cfg.inventories, prefix .. '-'), transposer = '', side = 0 }
     self.cfg.inventories[#self.cfg.inventories + 1] = x
     return x
 end
+
 function F:newRoute(from, to, prefix)
     local a, b = self:inventory(from), self:inventory(to)
     local r = {
@@ -2133,6 +2107,7 @@ function F:newRoute(from, to, prefix)
     self.cfg.routes[#self.cfg.routes + 1] = r
     return r
 end
+
 function F:beePort(a, mode, create)
     for _, b in ipairs(a.beeBoxes) do
         local r = self:route(b[mode])
@@ -2147,6 +2122,7 @@ function F:beePort(a, mode, create)
     end
     return x
 end
+
 function F:beeBox(a, number, create)
     local b = find(a.beeBoxes, 'box', number)
     if not b and create then
@@ -2167,6 +2143,7 @@ function F:beeBox(a, number, create)
     end
     return b
 end
+
 function F:boxes(pool)
     local seen = {}
     for _, c in ipairs(pool.cells) do
@@ -2185,6 +2162,7 @@ function F:boxes(pool)
     table.sort(boxes)
     return boxes
 end
+
 function F:feedPort(feed, create)
     if create and not find(self.cfg.feeds, 'id', feed.id) then
         self.cfg.feeds[#self.cfg.feeds + 1] = feed
@@ -2196,9 +2174,11 @@ function F:feedPort(feed, create)
     end
     return inv
 end
+
 function F:feeds()
     return #self.cfg.feeds > 0 and self.cfg.feeds or { self.feedDraft }
 end
+
 function F:at(transposer, side)
     if transposer ~= '' then
         for _, inv in ipairs(self.cfg.inventories) do
@@ -2208,6 +2188,7 @@ function F:at(transposer, side)
         end
     end
 end
+
 function F:fluidPosition(material)
     for i, m in ipairs(self.ui.M) do
         if m.source == material then
@@ -2215,6 +2196,7 @@ function F:fluidPosition(material)
         end
     end
 end
+
 function F:placeFeedCell(feed, cell)
     local drive, slot = self:fluidPosition(cell.material)
     local port = self:feedPort(feed, true)
@@ -2232,6 +2214,7 @@ function F:placeFeedCell(feed, cell)
     cell.slot = slot
     self:removeUnusedInventory(old)
 end
+
 function F:feedCell(feed, material, enabled)
     local cell, i = find(feed.cells, 'material', material)
     if enabled and not cell then
@@ -2244,6 +2227,7 @@ function F:feedCell(feed, material, enabled)
     end
     return cell
 end
+
 function F:objects()
     local out = {}
     local function add(kind, value, label, box)
@@ -2268,22 +2252,17 @@ function F:objects()
             add('array', a, '阵列：' .. (a.name or tostring(i)))
         end
     else
-        for i, c in ipairs(self.cfg.channels) do
-            add(
-                'channel',
-                c,
-                #self.cfg.channels == 1 and '公共原料子网'
-                    or '接收子网：' .. (c.name or tostring(i))
-            )
-        end
+        add('channel', self.cfg.channels[1], '公共原料子网')
     end
     return out
 end
+
 function F:object()
     local list = self:objects()
     self.pos = math.max(1, math.min(self.pos, math.max(1, #list)))
     return list[self.pos], list
 end
+
 function F:openTab(tab)
     self.tab = tab
     self.pos = 1
@@ -2292,6 +2271,7 @@ function F:openTab(tab)
     self.selected = {}
     self.boxPage = 1
 end
+
 function F:field(label, target, key, kind, source, lo, hi)
     local section = ({ pool = 'beePools', array = 'arrays' })[(self:object() or {}).kind]
     return {
@@ -2314,6 +2294,7 @@ function F:field(label, target, key, kind, source, lo, hi)
         end,
     }
 end
+
 function F:form(fluidIndex)
     local o = self:object()
     local rows = {}
@@ -2448,13 +2429,6 @@ function F:form(fluidIndex)
         end)
         for _, spec in ipairs({ { '库存下限 L', 'low', 0 }, { '补充目标 L', 'high', 1 } }) do
             field(spec[1], x, spec[2], 'number', nil, spec[3])
-            add({
-                kind = 'presets',
-                label = spec[1] .. '快捷值',
-                set = function(v)
-                    x[spec[2]] = v
-                end,
-            })
         end
     elseif o.kind == 'generators' then
         local available = {}
@@ -2680,8 +2654,9 @@ function F:form(fluidIndex)
     end
     return rows
 end
+
 function F:choices(f)
-    local rows = f.options or self.ui:choices(f, self.cfg, self.devices)
+    local rows = self.ui:choices(f, self.cfg, self.devices)
     if f.source == 'device:buffer' then
         local controllers = {}
         for _, row in ipairs(rows) do
@@ -2693,6 +2668,7 @@ function F:choices(f)
     end
     return rows
 end
+
 function F:nodePicker(a)
     local allowed = {}
     for _, d in ipairs(self.ui.C.unboundNodes(self.cfg, self.devices)) do
@@ -2746,6 +2722,7 @@ function F:nodePicker(a)
         end,
     }
 end
+
 function F:bindNodes(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
     local ok, message = self.ui.C.bindNodes(self.cfg, a, self.devices)
@@ -2754,6 +2731,7 @@ function F:bindNodes(a)
     end
     self.message = message
 end
+
 function F:doorPicker(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
     local options = {}
@@ -2776,18 +2754,11 @@ function F:doorPicker(a)
         end,
     }
 end
+
 function F:patternPicker(c)
-    local used = {}
-    for _, other in ipairs(self.cfg.channels) do
-        if other ~= c then
-            for _, p in ipairs(other.patterns) do
-                used[p.address] = true
-            end
-        end
-    end
     local options = {}
     for _, d in ipairs(self.devices) do
-        if self.ui.C.matches(d, 'pattern') and not used[d.address] then
+        if self.ui.C.matches(d, 'pattern') then
             options[#options + 1] = { value = d.address, label = d.address }
         end
     end
@@ -2837,6 +2808,7 @@ function F:fluidField(index, key, rows)
         end
     end
 end
+
 function F:begin(f)
     self.edit = {
         field = f,
@@ -2844,6 +2816,7 @@ function F:begin(f)
         replace = true,
     }
 end
+
 function F:commit()
     local e = self.edit
     if not e then
@@ -2863,6 +2836,7 @@ function F:commit()
     self:changed()
     return true
 end
+
 function F:activate(f, button)
     if button ~= nil and (f.kind == 'side' or f.inventory) then
         local lo, hi = 0, 5
@@ -2908,10 +2882,11 @@ function F:activate(f, button)
                 f.set(v)
             end,
         }
-    elseif f.kind ~= 'heading' and f.kind ~= 'presets' then
+    elseif f.kind ~= 'heading' then
         self:begin(f)
     end
 end
+
 function F:act(action, button)
     if not action then
         return
@@ -2983,10 +2958,6 @@ function F:act(action, button)
                 self:activate(f, button)
             end
         end
-    elseif action:match('^preset:') then
-        local index, value = action:match('^preset:(%d+):(.+)$')
-        self:form()[tonumber(index)].set(tonumber(value))
-        self:changed()
     elseif action == 'save' then
         local ok, err = pcall(function()
             for _, band in ipairs(self.cfg.bands) do
@@ -3036,12 +3007,6 @@ function F:act(action, button)
             end
             self:changed()
         end
-    elseif action == 'bind-nodes' and o and o.kind == 'array' then
-        self:bindNodes(o.value)
-        self:changed()
-    elseif action == 'bind-door' and o and o.kind == 'array' then
-        self:doorPicker(o.value)
-        self:changed()
     elseif action == 'up' or action == 'down' then
         if self.popup then
             self:act(action == 'up' and 'prev' or 'next')
@@ -3138,6 +3103,7 @@ function F:act(action, button)
         end
     end
 end
+
 function F:event(name, _, ch, code, direction)
     if name == 'interrupted' then
         self:act('quit')
@@ -3201,6 +3167,7 @@ function F:event(name, _, ch, code, direction)
         end
     end
 end
+
 function F:value(f)
     local v = f.get()
     if f.kind == 'boolean' then
@@ -3208,13 +3175,6 @@ function F:value(f)
     end
     if f.kind == 'side' then
         return tostring(v) .. ' ' .. (sides[(v or 0) + 1] or '')
-    end
-    if f.options then
-        for _, o in ipairs(f.options) do
-            if o.value == v then
-                return o.label
-            end
-        end
     end
     if f.kind == 'choice' and f.source and not f.source:match('^device:') then
         return self.ui:recordName(self.cfg, f.source, v)
@@ -3224,6 +3184,7 @@ function F:value(f)
     end
     return type(v) == 'number' and self.ui.exact(v) or tostring(v)
 end
+
 function F:drawBox(o, x, width)
     local ui = self.ui
     local cells = {}
@@ -3277,6 +3238,7 @@ function F:drawBox(o, x, width)
     ui:put(x, 7, '青底：已选  绿色：已登记  --：未登记', width, ui.ink.dim)
     ui:put(x, ui.h - 4, table.concat(summary, ' '), width, ui.ink.dim)
 end
+
 function F:drawFluids(x, width, b)
     local ui, ink = self.ui, self.ui.ink
     local numberWidth = width >= 80 and 10 or 7
@@ -3364,10 +3326,16 @@ function F:drawFluids(x, width, b)
         )
         if self.fluidKey == 'low' or self.fluidKey == 'high' then
             local step = 8
-            for i, preset in ipairs({ { '1M', 1e6 }, { '10M', 1e7 }, { '100M', 1e8 }, { '1G', 1e9 }, {
-                '10G',
-                1e10,
-            } }) do
+            for i, preset in ipairs({
+                { '1M', 1e6 },
+                { '10M', 1e7 },
+                { '100M', 1e8 },
+                { '1G', 1e9 },
+                {
+                    '10G',
+                    1e10,
+                },
+            }) do
                 ui:control(
                     'fluid-preset:' .. ui.exact(preset[2]),
                     x + (i - 1) * step,
@@ -3404,6 +3372,7 @@ function F:drawFluids(x, width, b)
         ink.dim
     )
 end
+
 function F:draw()
     local ui = self.ui
     local ink = ui.ink
@@ -3489,7 +3458,6 @@ function F:draw()
     self.perPage = math.max(1, math.floor((h - 13) / stride))
     if self.popup then
         local p = self.popup
-        self.options = p.options
         local step = p.options[1] and p.options[1].detail and 2 or 1
         local per = math.floor((h - 15) / step)
         self.optionPages = math.max(1, math.ceil(#p.options / per))
@@ -3540,18 +3508,6 @@ function F:draw()
                     width + 2,
                     ink.green
                 )
-            elseif f.kind == 'presets' then
-                local px = x
-                for _, preset in ipairs({
-                    { '1M', 1e6 },
-                    { '10M', 1e7 },
-                    { '100M', 1e8 },
-                    { '1G', 1e9 },
-                    { '10G', 1e10 },
-                }) do
-                    ui:control('preset:' .. i .. ':' .. preset[2], px, y, preset[1], false, 7)
-                    px = px + 8
-                end
             elseif f.kind == 'action' then
                 ui:control('field:' .. i, x, y, f.label, false, width)
             else
@@ -3589,6 +3545,7 @@ function F:draw()
     ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end
+
 function F:run()
     while not self.done do
         self:draw()
@@ -3620,6 +3577,7 @@ G.ink = ink
 local function exact(n)
     return n ~= nil and string.format('%.0f', n) or '--'
 end
+
 local function amount(n)
     if n == nil then
         return '--'
@@ -3634,21 +3592,18 @@ end
 G.amount = amount
 G.exact = exact
 function G.new(gpu, event, unicode, config, materials)
-    local self = setmetatable(
-        {
-            gpu = gpu,
-            event = event,
-            u = unicode,
-            C = config,
-            M = materials,
-            cache = {},
-            tab = 1,
-            selected = { 1, 1, 1 },
-            arrayIndex = 1,
-            nodePage = 1,
-        },
-        G
-    )
+    local self = setmetatable({
+        gpu = gpu,
+        event = event,
+        u = unicode,
+        C = config,
+        M = materials,
+        cache = {},
+        tab = 1,
+        selected = { 1, 1, 1 },
+        arrayIndex = 1,
+        nodePage = 1,
+    }, G)
     local w, h = gpu.getResolution()
     if w < 80 or h < 25 then
         local mw, mh = gpu.maxResolution()
@@ -3661,6 +3616,7 @@ function G.new(gpu, event, unicode, config, materials)
     )
     return self
 end
+
 function G:clip(s, n)
     s = tostring(s or ''):gsub('§.', ''):gsub('[\r\n]', ' ')
     while self.u.wlen(s) > n and #s > 0 do
@@ -3668,6 +3624,7 @@ function G:clip(s, n)
     end
     return s
 end
+
 function G:begin(title)
     self.w, self.h = self.gpu.getResolution()
     self.rows = {}
@@ -3678,6 +3635,7 @@ function G:begin(title)
     self:put(1, 1, string.rep(' ', self.w), self.w, ink.cyan, ink.panel)
     self:put(2, 1, title, self.w - 3, ink.cyan, ink.panel)
 end
+
 function G:put(x, y, text, width, fg, bg)
     width = math.min(width or self.w - x + 1, self.w - x + 1)
     if y < 1 or y > self.h or x < 1 or width < 1 then
@@ -3685,12 +3643,14 @@ function G:put(x, y, text, width, fg, bg)
     end
     self.rows[y][#self.rows[y] + 1] = { x, self:clip(text, width), fg or ink.text, bg or ink.bg }
 end
+
 function G:button(id, x, y, label, selected, width)
     local text = self:clip('[' .. label .. ']', width or self.w - x + 1)
     local n = self.u.wlen(text)
     self:put(x, y, text, n, selected and ink.bg or ink.cyan, selected and ink.cyan or ink.panel)
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
+
 function G:control(id, x, y, label, selected, width)
     local text = self:clip(label, width or self.w - x + 1)
     local n = width or self.u.wlen(text)
@@ -3704,6 +3664,7 @@ function G:control(id, x, y, label, selected, width)
     )
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
+
 function G:hit(x, y)
     for _, h in ipairs(self.hits) do
         if y == h.y and x >= h.x and x < h.x + h.w then
@@ -3711,6 +3672,7 @@ function G:hit(x, y)
         end
     end
 end
+
 function G:bar(x, y, width, ratio, color)
     self:put(x, y, string.rep('━', width), width, ink.panel)
     self:put(
@@ -3721,6 +3683,7 @@ function G:bar(x, y, width, ratio, color)
         color or ink.cyan
     )
 end
+
 function G:frame(x, top, width, bottom)
     self:put(x, top, '┌' .. string.rep('─', width - 2) .. '┐', width, ink.dim)
     for y = top + 1, bottom - 1 do
@@ -3729,6 +3692,7 @@ function G:frame(x, top, width, bottom)
     end
     self:put(x, bottom, '└' .. string.rep('─', width - 2) .. '┘', width, ink.dim)
 end
+
 function G:wrap(x, y, text, width, lines, color)
     text = tostring(text or ''):gsub('[\r\n]', ' ')
     for line = 0, lines - 1 do
@@ -3737,6 +3701,7 @@ function G:wrap(x, y, text, width, lines, color)
         text = self.u.sub(text, self.u.len(part) + 1)
     end
 end
+
 function G:paint()
     local w, h = self.w, self.h
     if w ~= self.width or h ~= self.height then
@@ -3772,6 +3737,7 @@ function G:paint()
     end
     colors(0xFFFFFF, 0x000000)
 end
+
 function G:recordName(cfg, section, value)
     local key = type(value) == 'table' and (value.id or value.address) or value
     for i, r in ipairs(cfg[section] or {}) do
@@ -3798,6 +3764,7 @@ function G:recordName(cfg, section, value)
     end
     return '未选择'
 end
+
 function G:choices(f, cfg, devices)
     local rows = {}
     if f.source:sub(1, 7) == 'device:' then
@@ -3817,7 +3784,7 @@ function G:choices(f, cfg, devices)
                     ['multi.bec.generator'] = '纠缠装置',
                 }
                 local detail = names[d.kind] or machines[d.name] or d.name or d.kind
-                for i, a in ipairs(cfg.arrays) do
+                for _, a in ipairs(cfg.arrays) do
                     if a.diode == d.address then
                         detail = detail .. ' / ' .. self:recordName(cfg, 'arrays', a)
                     end
@@ -3830,10 +3797,6 @@ function G:choices(f, cfg, devices)
                 rows[#rows + 1] = { label = d.address, value = d.address, detail = detail }
             end
         end
-    elseif f.source == 'materials' then
-        for _, m in ipairs(self.M) do
-            rows[#rows + 1] = { label = m.label, value = m.source }
-        end
     else
         for _, x in ipairs(cfg[f.source]) do
             rows[#rows + 1] = { label = self:recordName(cfg, f.source, x), value = x.id }
@@ -3841,6 +3804,7 @@ function G:choices(f, cfg, devices)
     end
     return rows
 end
+
 function G:edit(cfg, component, save)
     return self.Editor.new(self, cfg, component, save):run()
 end
@@ -3851,6 +3815,7 @@ local phases = {
     run = '加工',
     ['return'] = '回收蜂群',
 }
+
 local function phase(b, s)
     if b.phase == 'collect' then
         return '收集算力奇点 ' .. #b.workers .. '/15 种'
@@ -3861,14 +3826,12 @@ local function phase(b, s)
     if s and s.request then
         return (s.request.supply and '等待补充 T' or '等待 T') .. s.request.tier .. ' 蜂群'
     end
-    if b.yielding then
-        return '等待当前加工完成'
-    end
     if b.phase == 'wait' and not b.granted then
         return '等待凝聚物'
     end
     return phases[b.phase]
 end
+
 function G:beeWait(e, a)
     local s = e.s.arrays[a.address]
     local request = s and s.request
@@ -3901,6 +3864,7 @@ function G:beeWait(e, a)
             or '当前无阵列借用'
         )
 end
+
 function G:runtime(e, refill)
     self:begin('BEC / 多观测阵列')
     local w, h = self.w, self.h
@@ -4200,6 +4164,7 @@ function G:runtime(e, refill)
     self:put(23, h, '1/2/3 面板  ↑↓选择  []翻页', w - 24, ink.cyan)
     self:paint()
 end
+
 function G:arrayPanel(e, x, top, width, bottom)
     local a = e.arrays[self.arrayIndex]
     if not a then
@@ -4247,17 +4212,11 @@ function G:arrayPanel(e, x, top, width, bottom)
             self:put(
                 x,
                 y,
-                '#'
-                    .. i
-                    .. '  '
-                    .. (n.upper and '≤' or '')
-                    .. exact(n.parallel)
-                    .. ' 并行  T'
-                    .. (n.tier or '-'),
+                '#' .. i .. '  ' .. exact(n.parallel) .. ' 并行  T' .. (n.tier or '-'),
                 width
             )
             if n.fast then
-                self:put(x, y + 1, '固定蜂群 · 连续加工', width, ink.cyan)
+                self:put(x, y + 1, '固定蜂群 · 加工中', width, ink.cyan)
             else
                 self:bar(x, y + 1, width - 9, n.progress / n.length)
                 self:put(
@@ -4295,6 +4254,7 @@ function G:arrayPanel(e, x, top, width, bottom)
         ink.dim
     )
 end
+
 function G:runtimeEvent(name, _, ch, code, direction)
     local action = name == 'touch' and self:hit(ch, code)
     if name == 'key_down' then
@@ -4366,45 +4326,39 @@ local I = {}
 local function integer(n)
     return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
 end
-function I.key(s, fluid)
-    assert(type(s) == 'table' and type(s.name) == 'string', '物品或流体描述缺少注册名')
+
+function I.key(s)
+    assert(type(s) == 'table' and type(s.name) == 'string', '物品描述缺少注册名')
     local tag = ''
     if s.hasTag then
         assert(
-            not fluid and type(s.tag) == 'string',
+            type(s.tag) == 'string',
             '无法读取物品 NBT 数据，请启用 OC 的物品 NBT 访问或使用无标签原料'
         )
         tag = s.tag
     end
-    return (fluid and 'f:' or 'i:')
-        .. #s.name
-        .. ':'
-        .. s.name
-        .. ':'
-        .. tostring(fluid and 0 or s.damage or 0)
-        .. ':'
-        .. tag
+    return 'i:' .. #s.name .. ':' .. s.name .. ':' .. tostring(s.damage or 0) .. ':' .. tag
 end
+
 function I.amount(s, fluid)
     local n = fluid and (s.amount or s.size) or s.size
     assert(integer(n), '物品或流体数量不是精确的非负整数')
     return n
 end
-function I.inventory(items, fluids)
-    local counts, descriptors = {}, {}
-    for _, list in ipairs({ { items, false }, { fluids, true } }) do
-        for _, s in pairs(list[1]) do
-            local n = I.amount(s, list[2])
-            if n > 0 then
-                local key = I.key(s, list[2])
-                counts[key] = (counts[key] or 0) + n
-                assert(integer(counts[key]), '库存数量超出精确数值范围')
-                descriptors[key] = s
-            end
+
+function I.inventory(items)
+    local counts = {}
+    for _, s in pairs(items) do
+        local n = I.amount(s)
+        if n > 0 then
+            local key = I.key(s)
+            counts[key] = (counts[key] or 0) + n
+            assert(integer(counts[key]), '库存数量超出精确数值范围')
         end
     end
-    return counts, descriptors
+    return counts
 end
+
 local function subset(a, b)
     for key in pairs(a) do
         if not b[key] then
@@ -4413,6 +4367,7 @@ local function subset(a, b)
     end
     return true
 end
+
 local function identity(counts)
     local keys, parts = {}, {}
     for key in pairs(counts) do
@@ -4438,6 +4393,7 @@ function I.singularity(outputs)
         end
     end
 end
+
 function I.catalog(patterns)
     local result = { patterns = {} }
     for slot, p in pairs(patterns) do
@@ -4446,7 +4402,7 @@ function I.catalog(patterns)
             type(p.inputs) == 'table' and type(p.outputs) == 'table',
             '无法读取槽位 ' .. slot .. ' 中的样板输入和输出'
         )
-        local entry = { slot = slot, inputs = {}, solids = {}, outputs = {} }
+        local entry = { slot = slot, inputs = {}, outputs = {} }
         for _, s in pairs(p.inputs) do
             if s.name then
                 assert(
@@ -4457,24 +4413,21 @@ function I.catalog(patterns)
                 local fluid = s.amount ~= nil and s.damage == nil
                 local n = I.amount(s, fluid)
                 if n > 0 then
-                    local key = I.key(s, fluid)
+                    assert(
+                        not fluid,
+                        '处理样板的输入只能包含固体原料，请删除流体输入'
+                    )
+                    local key = I.key(s)
                     entry.inputs[key] = (entry.inputs[key] or 0) + n
-                    if fluid then
-                        error(
-                            '处理样板的输入只能包含固体原料，请删除流体输入'
-                        )
-                    else
-                        entry.solids[key] = true
-                    end
                 end
             end
         end
-        assert(next(entry.solids), '槽位 ' .. slot .. ' 中的样板未填写固体原料')
+        assert(next(entry.inputs), '槽位 ' .. slot .. ' 中的样板未填写固体原料')
 
         for _, s in pairs(p.outputs) do
             if s.name and I.amount(s, s.amount ~= nil and s.damage == nil) > 0 then
                 assert(s.damage ~= nil, '处理样板的输出必须是物品')
-                local key = I.key(s, false)
+                local key = I.key(s)
                 entry.outputs[key] = (entry.outputs[key] or 0) + I.amount(s, false)
                 entry.label = entry.label or s.label or s.name
             end
@@ -4485,12 +4438,12 @@ function I.catalog(patterns)
         entry.key = #inputs .. ':' .. inputs .. identity(entry.outputs)
         for _, other in ipairs(result.patterns) do
             assert(
-                not subset(entry.solids, other.solids) and not subset(other.solids, entry.solids),
+                not subset(entry.inputs, other.inputs) and not subset(other.inputs, entry.inputs),
                 '无法区分槽位 '
                     .. slot
                     .. ' 与 '
                     .. other.slot
-                    .. ' 的样板；请删除重复样板，或分别放入独立接单通道'
+                    .. ' 的样板；公共原料子网无法区分这些原料，请删除或调整冲突样板'
             )
         end
         result.patterns[#result.patterns + 1] = entry
@@ -4498,6 +4451,7 @@ function I.catalog(patterns)
     assert(#result.patterns > 0, '配置的样板接口中没有处理样板')
     return result
 end
+
 function I.identify(catalog, counts)
     if not next(counts) then
         return nil
@@ -4514,7 +4468,7 @@ function I.identify(catalog, counts)
         if compatible then
             partial = true
             local ready = true
-            for key in pairs(p.solids) do
+            for key in pairs(p.inputs) do
                 if (counts[key] or 0) == 0 then
                     ready = false
                     break
@@ -4566,22 +4520,20 @@ local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
     state.moves = state.moves or {}
-    return setmetatable(
-        {
-            cfg = cfg,
-            state = state,
-            proxy = proxy,
-            save = save,
-            inventories = U.index(cfg.inventories),
-            routes = U.index(cfg.routes),
-        },
-        L
-    )
+    return setmetatable({
+        state = state,
+        proxy = proxy,
+        save = save,
+        inventories = U.index(cfg.inventories),
+        routes = U.index(cfg.routes),
+    }, L)
 end
+
 function L:stack(id, slot)
     local e = assert(self.inventories[id], '未知库存：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
 end
+
 function L:size(id)
     local e = assert(self.inventories[id])
     return assert(
@@ -4589,24 +4541,26 @@ function L:size(id)
         '无法读取库存，请检查转运器方向和连接：' .. id
     )
 end
+
 function L:ends(id)
     local r = assert(self.routes[id], '路线不存在：' .. tostring(id))
     return r.steps[1].from, r.steps[#r.steps].to
 end
+
 local function key(id, slot)
     return id .. ':' .. slot
 end
-function L:locks(except)
+
+function L:locks()
     local locks = {}
     for owner, m in pairs(self.state.moves) do
-        if owner ~= except then
-            for k in pairs(m.locks) do
-                locks[k] = owner
-            end
+        for k in pairs(m.locks) do
+            locks[k] = owner
         end
     end
     return locks
 end
+
 function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     if self.state.moves[owner] then
         return true
@@ -4667,6 +4621,7 @@ function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     self.save()
     return true
 end
+
 function L:tick(owner)
     local m = assert(self.state.moves[owner])
     if m.done then
@@ -4703,10 +4658,12 @@ function L:tick(owner)
     self.save()
     return m.done
 end
+
 function L:finish(owner)
     self.state.moves[owner] = nil
     self.save()
 end
+
 function L:step(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     if not self:start(owner, route, reverse, sourceSlot, targetSlot, ioSink) then
         return false
@@ -4722,8 +4679,13 @@ files[#files + 1] = {
 -- IDs: GT 5.09.54.133. Chinese names: GTNH-Translations 816761d, fluid.entangled_*.
 local r, byName = {}, {}
 local function add(source, id, unit, label, short)
-    local m =
-        { source = source, condensate = 'entangled_' .. id, unit = unit, label = label, short = short }
+    local m = {
+        source = source,
+        condensate = 'entangled_' .. id,
+        unit = unit,
+        label = label,
+        short = short,
+    }
     m.condensateLabel = '纠缠玻色-爱因斯坦凝聚态' .. short
     r[#r + 1] = m
     byName[source] = m
@@ -4782,6 +4744,7 @@ function r.name(id, short)
     local m = byName[id]
     return m and (short and m.short or id == m.source and m.label or m.condensateLabel) or id
 end
+
 function r.text(s)
     return tostring(s):gsub('[%w_%.]+', function(id)
         return r.name(id)
@@ -4798,6 +4761,7 @@ local L = {}
 local function integer(n)
     return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
 end
+
 function L.steps(raw)
     local result = {}
     for _, s in pairs(raw or {}) do
@@ -4838,6 +4802,7 @@ function L.choose(workers, previous, length)
     end
     return eligible or lowest
 end
+
 function L.tier(required, cells)
     local selected
     for tier in pairs(cells) do
@@ -4847,6 +4812,7 @@ function L.tier(required, cells)
     end
     return assert(selected, '未配置能够满足 T' .. required .. ' 的蜂群')
 end
+
 function L.requested(steps, progress)
     for _, s in ipairs(steps) do
         if progress >= s.start and progress < s.finish then
@@ -4854,6 +4820,7 @@ function L.requested(steps, progress)
         end
     end
 end
+
 function L.fastTier(steps, cells, counts, parallel)
     local low, high = 10, 1
     for _, s in ipairs(steps) do
@@ -5035,6 +5002,7 @@ function R.check(cfg, state, U, proxy, M)
     end
     return true
 end
+
 function R.adopt(e, choose)
     e:catalogsRead()
     local arrays, patterns = e.U.copy(e.s.arrays), e.U.copy(e.s.patterns)
@@ -5068,8 +5036,7 @@ function R.adopt(e, choose)
                     )
                     unit, steps = per, recipe
                     count = count + parallel
-                    workers[#workers + 1] =
-                        { address = node.address, count = parallel, limit = parallel }
+                    workers[#workers + 1] = { address = node.address, count = parallel }
                 end
             end
             -- With no move record, an occupied port has no recoverable return address.
@@ -5103,12 +5070,10 @@ function R.adopt(e, choose)
                 s.batch = {
                     key = key,
                     count = count,
-                    done = 0,
                     workers = workers,
                     phase = 'run',
                     started = true,
                     granted = true,
-                    adopted = true,
                 }
             end
         end
@@ -5122,7 +5087,8 @@ function R.adopt(e, choose)
             local candidates = {}
             for _, c in ipairs(e.pools[a.beePool].cells) do
                 if
-                    c.tier == provided.tier and not used[a.beePool .. ':' .. c.box .. ':' .. c.slot]
+                    c.tier == provided.tier
+                    and not used[a.beePool .. ':' .. c.box .. ':' .. c.slot]
                 then
                     local stack = e.log:stack(e:beeAccess(a, c).inventory, c.slot)
                     if stack and stack.storedItemCount == 0 then
@@ -5179,13 +5145,14 @@ function R.new(engine)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
             if not loading or loading.index ~= i then
-                self:cell(f, c)
+                self:cell(c)
             end
         end
     end
     return self
 end
-function R:cell(f, c, stack)
+
+function R:cell(c, stack)
     local e = self.e
     local source = e.log:ends(c.route)
     stack = stack
@@ -5205,6 +5172,7 @@ function R:cell(f, c, stack)
     end
     return stack.storedFluidCount, stack.storedFluidCount + stack.remainingFluidCount
 end
+
 function R:generators(feed)
     local e = self.e
     for _, g in ipairs(e.cfg.generators) do
@@ -5225,12 +5193,13 @@ function R:generators(feed)
         end
     end
 end
+
 function R:observe(f)
     local e = self.e
     local s = self.s.feeds[f.id]
     for i, c in ipairs(f.cells) do
         if not s.loading or s.loading.index ~= i then
-            local amount, capacity = self:cell(f, c)
+            local amount, capacity = self:cell(c)
             local m = self.materials[c.material]
             local pending = s.pending[i]
             -- A machine can start between the earlier machine sample and this cell read.
@@ -5279,6 +5248,7 @@ function R:observe(f)
     end
     s.initialized = true
 end
+
 function R:receive(f)
     local e = self.e
     local s = self.s.feeds[f.id]
@@ -5296,7 +5266,7 @@ function R:receive(f)
     elseif task.phase == 'io' then
         local stack = e.log:stack(f.io, 7)
         if stack then
-            task.amount = self:cell(f, c, stack)
+            task.amount = self:cell(c, stack)
             task.phase = 'back'
             e.save()
         end
@@ -5312,6 +5282,7 @@ function R:receive(f)
         end
     end
 end
+
 function R:tick()
     local e = self.e
     self:generators()
@@ -5334,7 +5305,6 @@ function R:tick()
     -- Clearing a completed production claim must precede the matching stock read.
     e.stock = e.storage.getStoredCondensate()
     local pending = {}
-    local capacity = 0
     for _, f in ipairs(e.cfg.feeds) do
         local s = self.s.feeds[f.id]
         for i, p in pairs(s.pending) do
@@ -5347,7 +5317,7 @@ function R:tick()
         end
     end
     -- Potential output is retained until every generator consuming that cell has finished.
-    capacity = e.U.total(e.stock) + e.U.total(pending)
+    local capacity = e.U.total(e.stock) + e.U.total(pending)
     for _, b in ipairs(e.cfg.bands) do
         local m = self.materials[b.material]
         local free = (e.stock[m.condensate] or 0) - (e.reserved[m.condensate] or 0)
@@ -5386,7 +5356,7 @@ function R:tick()
                     and not s.pending[i]
                     and e.now >= (s.retry[i] or 0)
                 then
-                    local _, cap = self:cell(f, c)
+                    local _, cap = self:cell(c)
                     if capacity + cap <= e.cfg.fieldLimit then
                         s.cursor = i
                         s.loading = { index = i, phase = 'out', capacity = cap }
@@ -5450,6 +5420,7 @@ function U.copy(v)
     end
     return r
 end
+
 function U.equal(a, b)
     if type(a) ~= type(b) then
         return false
@@ -5469,12 +5440,14 @@ function U.equal(a, b)
     end
     return true
 end
+
 function U.integer(n, lo, hi)
     return type(n) == 'number'
         and n == math.floor(n)
         and n >= (lo or 0)
         and n <= (hi or 9007199254740991)
 end
+
 function U.add(a, b, m)
     for k, v in pairs(b or {}) do
         a[k] = (a[k] or 0) + v * (m or 1)
@@ -5482,6 +5455,7 @@ function U.add(a, b, m)
     end
     return a
 end
+
 function U.total(a)
     local n = 0
     for _, v in pairs(a or {}) do
@@ -5491,6 +5465,7 @@ function U.total(a)
     assert(U.integer(n), '总量超出精确整数范围')
     return n
 end
+
 function U.fits(stock, need)
     for k, v in pairs(need or {}) do
         if (stock[k] or 0) < v then
@@ -5499,9 +5474,11 @@ function U.fits(stock, need)
     end
     return true
 end
+
 function U.scale(a, n)
     return U.add({}, a, n)
 end
+
 function U.keys(t)
     local r = {}
     for k in pairs(t) do
@@ -5510,6 +5487,7 @@ function U.keys(t)
     table.sort(r)
     return r
 end
+
 function U.index(list, key)
     local r = {}
     for _, v in ipairs(list or {}) do

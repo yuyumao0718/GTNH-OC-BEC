@@ -3,22 +3,20 @@ local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
     state.moves = state.moves or {}
-    return setmetatable(
-        {
-            cfg = cfg,
-            state = state,
-            proxy = proxy,
-            save = save,
-            inventories = U.index(cfg.inventories),
-            routes = U.index(cfg.routes),
-        },
-        L
-    )
+    return setmetatable({
+        state = state,
+        proxy = proxy,
+        save = save,
+        inventories = U.index(cfg.inventories),
+        routes = U.index(cfg.routes),
+    }, L)
 end
+
 function L:stack(id, slot)
     local e = assert(self.inventories[id], '未知库存：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
 end
+
 function L:size(id)
     local e = assert(self.inventories[id])
     return assert(
@@ -26,24 +24,26 @@ function L:size(id)
         '无法读取库存，请检查转运器方向和连接：' .. id
     )
 end
+
 function L:ends(id)
     local r = assert(self.routes[id], '路线不存在：' .. tostring(id))
     return r.steps[1].from, r.steps[#r.steps].to
 end
+
 local function key(id, slot)
     return id .. ':' .. slot
 end
-function L:locks(except)
+
+function L:locks()
     local locks = {}
     for owner, m in pairs(self.state.moves) do
-        if owner ~= except then
-            for k in pairs(m.locks) do
-                locks[k] = owner
-            end
+        for k in pairs(m.locks) do
+            locks[k] = owner
         end
     end
     return locks
 end
+
 function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     if self.state.moves[owner] then
         return true
@@ -104,6 +104,7 @@ function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     self.save()
     return true
 end
+
 function L:tick(owner)
     local m = assert(self.state.moves[owner])
     if m.done then
@@ -140,10 +141,12 @@ function L:tick(owner)
     self.save()
     return m.done
 end
+
 function L:finish(owner)
     self.state.moves[owner] = nil
     self.save()
 end
+
 function L:step(owner, route, reverse, sourceSlot, targetSlot, ioSink)
     if not self:start(owner, route, reverse, sourceSlot, targetSlot, ioSink) then
         return false

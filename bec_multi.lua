@@ -37,9 +37,11 @@ local function screen()
     end
     return gui
 end
+
 local function compatible(cfg, state)
     return Recovery.check(cfg, state, U, component.proxy, M)
 end
+
 local function configure()
     local readable, cfg = pcall(function()
         return C.defaults(store.read('multi.setup') or store.read('multi.cfg'))
@@ -106,7 +108,7 @@ local ok, err = xpcall(function()
         end
         if command == 'recover' then
             engine:pause()
-            local held = false
+            local held
             repeat
                 held = true
                 for _, a in ipairs(engine.arrays) do

@@ -19,13 +19,14 @@ function R.new(engine)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
             if not loading or loading.index ~= i then
-                self:cell(f, c)
+                self:cell(c)
             end
         end
     end
     return self
 end
-function R:cell(f, c, stack)
+
+function R:cell(c, stack)
     local e = self.e
     local source = e.log:ends(c.route)
     stack = stack
@@ -45,6 +46,7 @@ function R:cell(f, c, stack)
     end
     return stack.storedFluidCount, stack.storedFluidCount + stack.remainingFluidCount
 end
+
 function R:generators(feed)
     local e = self.e
     for _, g in ipairs(e.cfg.generators) do
@@ -65,12 +67,13 @@ function R:generators(feed)
         end
     end
 end
+
 function R:observe(f)
     local e = self.e
     local s = self.s.feeds[f.id]
     for i, c in ipairs(f.cells) do
         if not s.loading or s.loading.index ~= i then
-            local amount, capacity = self:cell(f, c)
+            local amount, capacity = self:cell(c)
             local m = self.materials[c.material]
             local pending = s.pending[i]
             -- A machine can start between the earlier machine sample and this cell read.
@@ -119,6 +122,7 @@ function R:observe(f)
     end
     s.initialized = true
 end
+
 function R:receive(f)
     local e = self.e
     local s = self.s.feeds[f.id]
@@ -136,7 +140,7 @@ function R:receive(f)
     elseif task.phase == 'io' then
         local stack = e.log:stack(f.io, 7)
         if stack then
-            task.amount = self:cell(f, c, stack)
+            task.amount = self:cell(c, stack)
             task.phase = 'back'
             e.save()
         end
@@ -152,6 +156,7 @@ function R:receive(f)
         end
     end
 end
+
 function R:tick()
     local e = self.e
     self:generators()
@@ -174,7 +179,6 @@ function R:tick()
     -- Clearing a completed production claim must precede the matching stock read.
     e.stock = e.storage.getStoredCondensate()
     local pending = {}
-    local capacity = 0
     for _, f in ipairs(e.cfg.feeds) do
         local s = self.s.feeds[f.id]
         for i, p in pairs(s.pending) do
@@ -187,7 +191,7 @@ function R:tick()
         end
     end
     -- Potential output is retained until every generator consuming that cell has finished.
-    capacity = e.U.total(e.stock) + e.U.total(pending)
+    local capacity = e.U.total(e.stock) + e.U.total(pending)
     for _, b in ipairs(e.cfg.bands) do
         local m = self.materials[b.material]
         local free = (e.stock[m.condensate] or 0) - (e.reserved[m.condensate] or 0)
@@ -226,7 +230,7 @@ function R:tick()
                     and not s.pending[i]
                     and e.now >= (s.retry[i] or 0)
                 then
-                    local _, cap = self:cell(f, c)
+                    local _, cap = self:cell(c)
                     if capacity + cap <= e.cfg.fieldLimit then
                         s.cursor = i
                         s.loading = { index = i, phase = 'out', capacity = cap }

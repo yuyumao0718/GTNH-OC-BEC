@@ -1,8 +1,13 @@
 -- IDs: GT 5.09.54.133. Chinese names: GTNH-Translations 816761d, fluid.entangled_*.
 local r, byName = {}, {}
 local function add(source, id, unit, label, short)
-    local m =
-        { source = source, condensate = 'entangled_' .. id, unit = unit, label = label, short = short }
+    local m = {
+        source = source,
+        condensate = 'entangled_' .. id,
+        unit = unit,
+        label = label,
+        short = short,
+    }
     m.condensateLabel = '纠缠玻色-爱因斯坦凝聚态' .. short
     r[#r + 1] = m
     byName[source] = m
@@ -61,6 +66,7 @@ function r.name(id, short)
     local m = byName[id]
     return m and (short and m.short or id == m.source and m.label or m.condensateLabel) or id
 end
+
 function r.text(s)
     return tostring(s):gsub('[%w_%.]+', function(id)
         return r.name(id)

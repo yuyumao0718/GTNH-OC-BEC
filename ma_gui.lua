@@ -16,6 +16,7 @@ G.ink = ink
 local function exact(n)
     return n ~= nil and string.format('%.0f', n) or '--'
 end
+
 local function amount(n)
     if n == nil then
         return '--'
@@ -30,21 +31,18 @@ end
 G.amount = amount
 G.exact = exact
 function G.new(gpu, event, unicode, config, materials)
-    local self = setmetatable(
-        {
-            gpu = gpu,
-            event = event,
-            u = unicode,
-            C = config,
-            M = materials,
-            cache = {},
-            tab = 1,
-            selected = { 1, 1, 1 },
-            arrayIndex = 1,
-            nodePage = 1,
-        },
-        G
-    )
+    local self = setmetatable({
+        gpu = gpu,
+        event = event,
+        u = unicode,
+        C = config,
+        M = materials,
+        cache = {},
+        tab = 1,
+        selected = { 1, 1, 1 },
+        arrayIndex = 1,
+        nodePage = 1,
+    }, G)
     local w, h = gpu.getResolution()
     if w < 80 or h < 25 then
         local mw, mh = gpu.maxResolution()
@@ -57,6 +55,7 @@ function G.new(gpu, event, unicode, config, materials)
     )
     return self
 end
+
 function G:clip(s, n)
     s = tostring(s or ''):gsub('§.', ''):gsub('[\r\n]', ' ')
     while self.u.wlen(s) > n and #s > 0 do
@@ -64,6 +63,7 @@ function G:clip(s, n)
     end
     return s
 end
+
 function G:begin(title)
     self.w, self.h = self.gpu.getResolution()
     self.rows = {}
@@ -74,6 +74,7 @@ function G:begin(title)
     self:put(1, 1, string.rep(' ', self.w), self.w, ink.cyan, ink.panel)
     self:put(2, 1, title, self.w - 3, ink.cyan, ink.panel)
 end
+
 function G:put(x, y, text, width, fg, bg)
     width = math.min(width or self.w - x + 1, self.w - x + 1)
     if y < 1 or y > self.h or x < 1 or width < 1 then
@@ -81,12 +82,14 @@ function G:put(x, y, text, width, fg, bg)
     end
     self.rows[y][#self.rows[y] + 1] = { x, self:clip(text, width), fg or ink.text, bg or ink.bg }
 end
+
 function G:button(id, x, y, label, selected, width)
     local text = self:clip('[' .. label .. ']', width or self.w - x + 1)
     local n = self.u.wlen(text)
     self:put(x, y, text, n, selected and ink.bg or ink.cyan, selected and ink.cyan or ink.panel)
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
+
 function G:control(id, x, y, label, selected, width)
     local text = self:clip(label, width or self.w - x + 1)
     local n = width or self.u.wlen(text)
@@ -100,6 +103,7 @@ function G:control(id, x, y, label, selected, width)
     )
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
+
 function G:hit(x, y)
     for _, h in ipairs(self.hits) do
         if y == h.y and x >= h.x and x < h.x + h.w then
@@ -107,6 +111,7 @@ function G:hit(x, y)
         end
     end
 end
+
 function G:bar(x, y, width, ratio, color)
     self:put(x, y, string.rep('━', width), width, ink.panel)
     self:put(
@@ -117,6 +122,7 @@ function G:bar(x, y, width, ratio, color)
         color or ink.cyan
     )
 end
+
 function G:frame(x, top, width, bottom)
     self:put(x, top, '┌' .. string.rep('─', width - 2) .. '┐', width, ink.dim)
     for y = top + 1, bottom - 1 do
@@ -125,6 +131,7 @@ function G:frame(x, top, width, bottom)
     end
     self:put(x, bottom, '└' .. string.rep('─', width - 2) .. '┘', width, ink.dim)
 end
+
 function G:wrap(x, y, text, width, lines, color)
     text = tostring(text or ''):gsub('[\r\n]', ' ')
     for line = 0, lines - 1 do
@@ -133,6 +140,7 @@ function G:wrap(x, y, text, width, lines, color)
         text = self.u.sub(text, self.u.len(part) + 1)
     end
 end
+
 function G:paint()
     local w, h = self.w, self.h
     if w ~= self.width or h ~= self.height then
@@ -168,6 +176,7 @@ function G:paint()
     end
     colors(0xFFFFFF, 0x000000)
 end
+
 function G:recordName(cfg, section, value)
     local key = type(value) == 'table' and (value.id or value.address) or value
     for i, r in ipairs(cfg[section] or {}) do
@@ -194,6 +203,7 @@ function G:recordName(cfg, section, value)
     end
     return '未选择'
 end
+
 function G:choices(f, cfg, devices)
     local rows = {}
     if f.source:sub(1, 7) == 'device:' then
@@ -213,7 +223,7 @@ function G:choices(f, cfg, devices)
                     ['multi.bec.generator'] = '纠缠装置',
                 }
                 local detail = names[d.kind] or machines[d.name] or d.name or d.kind
-                for i, a in ipairs(cfg.arrays) do
+                for _, a in ipairs(cfg.arrays) do
                     if a.diode == d.address then
                         detail = detail .. ' / ' .. self:recordName(cfg, 'arrays', a)
                     end
@@ -226,10 +236,6 @@ function G:choices(f, cfg, devices)
                 rows[#rows + 1] = { label = d.address, value = d.address, detail = detail }
             end
         end
-    elseif f.source == 'materials' then
-        for _, m in ipairs(self.M) do
-            rows[#rows + 1] = { label = m.label, value = m.source }
-        end
     else
         for _, x in ipairs(cfg[f.source]) do
             rows[#rows + 1] = { label = self:recordName(cfg, f.source, x), value = x.id }
@@ -237,6 +243,7 @@ function G:choices(f, cfg, devices)
     end
     return rows
 end
+
 function G:edit(cfg, component, save)
     return self.Editor.new(self, cfg, component, save):run()
 end
@@ -247,6 +254,7 @@ local phases = {
     run = '加工',
     ['return'] = '回收蜂群',
 }
+
 local function phase(b, s)
     if b.phase == 'collect' then
         return '收集算力奇点 ' .. #b.workers .. '/15 种'
@@ -257,14 +265,12 @@ local function phase(b, s)
     if s and s.request then
         return (s.request.supply and '等待补充 T' or '等待 T') .. s.request.tier .. ' 蜂群'
     end
-    if b.yielding then
-        return '等待当前加工完成'
-    end
     if b.phase == 'wait' and not b.granted then
         return '等待凝聚物'
     end
     return phases[b.phase]
 end
+
 function G:beeWait(e, a)
     local s = e.s.arrays[a.address]
     local request = s and s.request
@@ -297,6 +303,7 @@ function G:beeWait(e, a)
             or '当前无阵列借用'
         )
 end
+
 function G:runtime(e, refill)
     self:begin('BEC / 多观测阵列')
     local w, h = self.w, self.h
@@ -596,6 +603,7 @@ function G:runtime(e, refill)
     self:put(23, h, '1/2/3 面板  ↑↓选择  []翻页', w - 24, ink.cyan)
     self:paint()
 end
+
 function G:arrayPanel(e, x, top, width, bottom)
     local a = e.arrays[self.arrayIndex]
     if not a then
@@ -643,17 +651,11 @@ function G:arrayPanel(e, x, top, width, bottom)
             self:put(
                 x,
                 y,
-                '#'
-                    .. i
-                    .. '  '
-                    .. (n.upper and '≤' or '')
-                    .. exact(n.parallel)
-                    .. ' 并行  T'
-                    .. (n.tier or '-'),
+                '#' .. i .. '  ' .. exact(n.parallel) .. ' 并行  T' .. (n.tier or '-'),
                 width
             )
             if n.fast then
-                self:put(x, y + 1, '固定蜂群 · 连续加工', width, ink.cyan)
+                self:put(x, y + 1, '固定蜂群 · 加工中', width, ink.cyan)
             else
                 self:bar(x, y + 1, width - 9, n.progress / n.length)
                 self:put(
@@ -691,6 +693,7 @@ function G:arrayPanel(e, x, top, width, bottom)
         ink.dim
     )
 end
+
 function G:runtimeEvent(name, _, ch, code, direction)
     local action = name == 'touch' and self:hit(ch, code)
     if name == 'key_down' then

@@ -15,6 +15,7 @@ local function find(list, key, value)
         end
     end
 end
+
 local function unique(list, prefix)
     local n = 1
     while find(list, 'id', prefix .. n) do
@@ -22,30 +23,27 @@ local function unique(list, prefix)
     end
     return prefix .. n
 end
+
 function F.new(ui, cfg, component, save)
-    local self = setmetatable(
-        {
-            ui = ui,
-            cfg = cfg,
-            component = component,
-            save = save,
-            tab = 1,
-            pos = 1,
-            offset = 1,
-            selected = {},
-            grade = 1,
-            boxPage = 1,
-            fluidIndex = 1,
-            fluidPage = 1,
-            fluidKey = 'low',
-            extraBoxes = {},
-            expanded = {},
-            source = 1,
-            message = '修改记入草稿；按 S 校验并保存',
-            schema = {},
-        },
-        F
-    )
+    local self = setmetatable({
+        ui = ui,
+        cfg = cfg,
+        component = component,
+        save = save,
+        tab = 1,
+        pos = 1,
+        offset = 1,
+        selected = {},
+        grade = 1,
+        boxPage = 1,
+        fluidIndex = 1,
+        fluidPage = 1,
+        fluidKey = 'low',
+        extraBoxes = {},
+        expanded = {},
+        message = '修改记入草稿；按 S 校验并保存',
+        schema = {},
+    }, F)
     for _, f in ipairs(ui.C.schema) do
         self.schema[f.key] = f
     end
@@ -73,12 +71,14 @@ function F.new(ui, cfg, component, save)
     end
     return self
 end
+
 function F:changed()
     if self.save.draft then
         self.save.draft(self.cfg)
     end
     self.message = '修改已记入草稿；按 S 校验并保存后生效'
 end
+
 function F:record(section)
     local r = self.ui.C.newRecord(self.schema[section].fields)
     if r.id then
@@ -98,12 +98,15 @@ function F:record(section)
     end
     return r
 end
+
 function F:inventory(id)
     return find(self.cfg.inventories, 'id', id)
 end
+
 function F:route(id)
     return find(self.cfg.routes, 'id', id)
 end
+
 function F:removeUnusedInventory(id)
     if not id then
         return
@@ -135,6 +138,7 @@ function F:removeUnusedInventory(id)
         table.remove(self.cfg.inventories, i)
     end
 end
+
 function F:removeUnusedRoute(id)
     local r, i = find(self.cfg.routes, 'id', id)
     if not r then
@@ -160,6 +164,7 @@ function F:removeUnusedRoute(id)
         self:removeUnusedInventory(step.to)
     end
 end
+
 function F:position(inv, transposer, side)
     -- Update matching access to the same container, while retaining other transposers' faces.
     for _, r in ipairs(self.cfg.routes) do
@@ -178,11 +183,13 @@ function F:position(inv, transposer, side)
     end
     inv.transposer, inv.side = transposer, side
 end
+
 function F:newInventory(prefix)
     local x = { id = unique(self.cfg.inventories, prefix .. '-'), transposer = '', side = 0 }
     self.cfg.inventories[#self.cfg.inventories + 1] = x
     return x
 end
+
 function F:newRoute(from, to, prefix)
     local a, b = self:inventory(from), self:inventory(to)
     local r = {
@@ -201,6 +208,7 @@ function F:newRoute(from, to, prefix)
     self.cfg.routes[#self.cfg.routes + 1] = r
     return r
 end
+
 function F:beePort(a, mode, create)
     for _, b in ipairs(a.beeBoxes) do
         local r = self:route(b[mode])
@@ -215,6 +223,7 @@ function F:beePort(a, mode, create)
     end
     return x
 end
+
 function F:beeBox(a, number, create)
     local b = find(a.beeBoxes, 'box', number)
     if not b and create then
@@ -235,6 +244,7 @@ function F:beeBox(a, number, create)
     end
     return b
 end
+
 function F:boxes(pool)
     local seen = {}
     for _, c in ipairs(pool.cells) do
@@ -253,6 +263,7 @@ function F:boxes(pool)
     table.sort(boxes)
     return boxes
 end
+
 function F:feedPort(feed, create)
     if create and not find(self.cfg.feeds, 'id', feed.id) then
         self.cfg.feeds[#self.cfg.feeds + 1] = feed
@@ -264,9 +275,11 @@ function F:feedPort(feed, create)
     end
     return inv
 end
+
 function F:feeds()
     return #self.cfg.feeds > 0 and self.cfg.feeds or { self.feedDraft }
 end
+
 function F:at(transposer, side)
     if transposer ~= '' then
         for _, inv in ipairs(self.cfg.inventories) do
@@ -276,6 +289,7 @@ function F:at(transposer, side)
         end
     end
 end
+
 function F:fluidPosition(material)
     for i, m in ipairs(self.ui.M) do
         if m.source == material then
@@ -283,6 +297,7 @@ function F:fluidPosition(material)
         end
     end
 end
+
 function F:placeFeedCell(feed, cell)
     local drive, slot = self:fluidPosition(cell.material)
     local port = self:feedPort(feed, true)
@@ -300,6 +315,7 @@ function F:placeFeedCell(feed, cell)
     cell.slot = slot
     self:removeUnusedInventory(old)
 end
+
 function F:feedCell(feed, material, enabled)
     local cell, i = find(feed.cells, 'material', material)
     if enabled and not cell then
@@ -312,6 +328,7 @@ function F:feedCell(feed, material, enabled)
     end
     return cell
 end
+
 function F:objects()
     local out = {}
     local function add(kind, value, label, box)
@@ -336,22 +353,17 @@ function F:objects()
             add('array', a, '阵列：' .. (a.name or tostring(i)))
         end
     else
-        for i, c in ipairs(self.cfg.channels) do
-            add(
-                'channel',
-                c,
-                #self.cfg.channels == 1 and '公共原料子网'
-                    or '接收子网：' .. (c.name or tostring(i))
-            )
-        end
+        add('channel', self.cfg.channels[1], '公共原料子网')
     end
     return out
 end
+
 function F:object()
     local list = self:objects()
     self.pos = math.max(1, math.min(self.pos, math.max(1, #list)))
     return list[self.pos], list
 end
+
 function F:openTab(tab)
     self.tab = tab
     self.pos = 1
@@ -360,6 +372,7 @@ function F:openTab(tab)
     self.selected = {}
     self.boxPage = 1
 end
+
 function F:field(label, target, key, kind, source, lo, hi)
     local section = ({ pool = 'beePools', array = 'arrays' })[(self:object() or {}).kind]
     return {
@@ -382,6 +395,7 @@ function F:field(label, target, key, kind, source, lo, hi)
         end,
     }
 end
+
 function F:form(fluidIndex)
     local o = self:object()
     local rows = {}
@@ -516,13 +530,6 @@ function F:form(fluidIndex)
         end)
         for _, spec in ipairs({ { '库存下限 L', 'low', 0 }, { '补充目标 L', 'high', 1 } }) do
             field(spec[1], x, spec[2], 'number', nil, spec[3])
-            add({
-                kind = 'presets',
-                label = spec[1] .. '快捷值',
-                set = function(v)
-                    x[spec[2]] = v
-                end,
-            })
         end
     elseif o.kind == 'generators' then
         local available = {}
@@ -748,8 +755,9 @@ function F:form(fluidIndex)
     end
     return rows
 end
+
 function F:choices(f)
-    local rows = f.options or self.ui:choices(f, self.cfg, self.devices)
+    local rows = self.ui:choices(f, self.cfg, self.devices)
     if f.source == 'device:buffer' then
         local controllers = {}
         for _, row in ipairs(rows) do
@@ -761,6 +769,7 @@ function F:choices(f)
     end
     return rows
 end
+
 function F:nodePicker(a)
     local allowed = {}
     for _, d in ipairs(self.ui.C.unboundNodes(self.cfg, self.devices)) do
@@ -814,6 +823,7 @@ function F:nodePicker(a)
         end,
     }
 end
+
 function F:bindNodes(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
     local ok, message = self.ui.C.bindNodes(self.cfg, a, self.devices)
@@ -822,6 +832,7 @@ function F:bindNodes(a)
     end
     self.message = message
 end
+
 function F:doorPicker(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
     local options = {}
@@ -844,18 +855,11 @@ function F:doorPicker(a)
         end,
     }
 end
+
 function F:patternPicker(c)
-    local used = {}
-    for _, other in ipairs(self.cfg.channels) do
-        if other ~= c then
-            for _, p in ipairs(other.patterns) do
-                used[p.address] = true
-            end
-        end
-    end
     local options = {}
     for _, d in ipairs(self.devices) do
-        if self.ui.C.matches(d, 'pattern') and not used[d.address] then
+        if self.ui.C.matches(d, 'pattern') then
             options[#options + 1] = { value = d.address, label = d.address }
         end
     end
@@ -905,6 +909,7 @@ function F:fluidField(index, key, rows)
         end
     end
 end
+
 function F:begin(f)
     self.edit = {
         field = f,
@@ -912,6 +917,7 @@ function F:begin(f)
         replace = true,
     }
 end
+
 function F:commit()
     local e = self.edit
     if not e then
@@ -931,6 +937,7 @@ function F:commit()
     self:changed()
     return true
 end
+
 function F:activate(f, button)
     if button ~= nil and (f.kind == 'side' or f.inventory) then
         local lo, hi = 0, 5
@@ -976,10 +983,11 @@ function F:activate(f, button)
                 f.set(v)
             end,
         }
-    elseif f.kind ~= 'heading' and f.kind ~= 'presets' then
+    elseif f.kind ~= 'heading' then
         self:begin(f)
     end
 end
+
 function F:act(action, button)
     if not action then
         return
@@ -1051,10 +1059,6 @@ function F:act(action, button)
                 self:activate(f, button)
             end
         end
-    elseif action:match('^preset:') then
-        local index, value = action:match('^preset:(%d+):(.+)$')
-        self:form()[tonumber(index)].set(tonumber(value))
-        self:changed()
     elseif action == 'save' then
         local ok, err = pcall(function()
             for _, band in ipairs(self.cfg.bands) do
@@ -1104,12 +1108,6 @@ function F:act(action, button)
             end
             self:changed()
         end
-    elseif action == 'bind-nodes' and o and o.kind == 'array' then
-        self:bindNodes(o.value)
-        self:changed()
-    elseif action == 'bind-door' and o and o.kind == 'array' then
-        self:doorPicker(o.value)
-        self:changed()
     elseif action == 'up' or action == 'down' then
         if self.popup then
             self:act(action == 'up' and 'prev' or 'next')
@@ -1206,6 +1204,7 @@ function F:act(action, button)
         end
     end
 end
+
 function F:event(name, _, ch, code, direction)
     if name == 'interrupted' then
         self:act('quit')
@@ -1269,6 +1268,7 @@ function F:event(name, _, ch, code, direction)
         end
     end
 end
+
 function F:value(f)
     local v = f.get()
     if f.kind == 'boolean' then
@@ -1276,13 +1276,6 @@ function F:value(f)
     end
     if f.kind == 'side' then
         return tostring(v) .. ' ' .. (sides[(v or 0) + 1] or '')
-    end
-    if f.options then
-        for _, o in ipairs(f.options) do
-            if o.value == v then
-                return o.label
-            end
-        end
     end
     if f.kind == 'choice' and f.source and not f.source:match('^device:') then
         return self.ui:recordName(self.cfg, f.source, v)
@@ -1292,6 +1285,7 @@ function F:value(f)
     end
     return type(v) == 'number' and self.ui.exact(v) or tostring(v)
 end
+
 function F:drawBox(o, x, width)
     local ui = self.ui
     local cells = {}
@@ -1345,6 +1339,7 @@ function F:drawBox(o, x, width)
     ui:put(x, 7, '青底：已选  绿色：已登记  --：未登记', width, ui.ink.dim)
     ui:put(x, ui.h - 4, table.concat(summary, ' '), width, ui.ink.dim)
 end
+
 function F:drawFluids(x, width, b)
     local ui, ink = self.ui, self.ui.ink
     local numberWidth = width >= 80 and 10 or 7
@@ -1432,10 +1427,16 @@ function F:drawFluids(x, width, b)
         )
         if self.fluidKey == 'low' or self.fluidKey == 'high' then
             local step = 8
-            for i, preset in ipairs({ { '1M', 1e6 }, { '10M', 1e7 }, { '100M', 1e8 }, { '1G', 1e9 }, {
-                '10G',
-                1e10,
-            } }) do
+            for i, preset in ipairs({
+                { '1M', 1e6 },
+                { '10M', 1e7 },
+                { '100M', 1e8 },
+                { '1G', 1e9 },
+                {
+                    '10G',
+                    1e10,
+                },
+            }) do
                 ui:control(
                     'fluid-preset:' .. ui.exact(preset[2]),
                     x + (i - 1) * step,
@@ -1472,6 +1473,7 @@ function F:drawFluids(x, width, b)
         ink.dim
     )
 end
+
 function F:draw()
     local ui = self.ui
     local ink = ui.ink
@@ -1557,7 +1559,6 @@ function F:draw()
     self.perPage = math.max(1, math.floor((h - 13) / stride))
     if self.popup then
         local p = self.popup
-        self.options = p.options
         local step = p.options[1] and p.options[1].detail and 2 or 1
         local per = math.floor((h - 15) / step)
         self.optionPages = math.max(1, math.ceil(#p.options / per))
@@ -1608,18 +1609,6 @@ function F:draw()
                     width + 2,
                     ink.green
                 )
-            elseif f.kind == 'presets' then
-                local px = x
-                for _, preset in ipairs({
-                    { '1M', 1e6 },
-                    { '10M', 1e7 },
-                    { '100M', 1e8 },
-                    { '1G', 1e9 },
-                    { '10G', 1e10 },
-                }) do
-                    ui:control('preset:' .. i .. ':' .. preset[2], px, y, preset[1], false, 7)
-                    px = px + 8
-                end
             elseif f.kind == 'action' then
                 ui:control('field:' .. i, x, y, f.label, false, width)
             else
@@ -1657,6 +1646,7 @@ function F:draw()
     ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end
+
 function F:run()
     while not self.done do
         self:draw()
