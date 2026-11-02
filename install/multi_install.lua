@@ -1450,7 +1450,7 @@ function F:drawFluids(x,width,b)
   local labels={'预缓存','流体','下限 L','目标 L','位置'}
   local positions={}; local px=x
   for i,key in ipairs(keys) do positions[key]=px; ui:put(px,b.top,labels[i],widths[i],ink.dim); px=px+widths[i]+1 end
-  local editTop=b.bottom-5; local per=math.max(1,editTop-b.top-1)
+  local editTop=b.bottom-6; local per=math.max(1,editTop-b.top-1)
   self.fluidPages=math.max(1,math.ceil(#self.fluidRows/per)); self.fluidPage=math.min(self.fluidPage,self.fluidPages)
   local first=(self.fluidPage-1)*per+1
   local function short(n)
@@ -1485,17 +1485,17 @@ function F:drawFluids(x,width,b)
     ui:control('fluid:'..self.fluidIndex..':'..self.fluidKey,x+labelWidth,editTop+2,
       editing and self.edit.text..'_' or self:value(f),editing,width-labelWidth)
     if self.fluidKey=='low' or self.fluidKey=='high' then
-      local step=width>=72 and 8 or 6
+      local step=8
       for i,preset in ipairs({{'1M',1e6},{'10M',1e7},{'100M',1e8},{'1G',1e9},{'10G',1e10}}) do
         ui:control('fluid-preset:'..ui.exact(preset[2]),x+(i-1)*step,editTop+3,preset[1],false,step-1)
       end
       for i,scale in ipairs({{'÷2',0.5},{'÷5',0.2},{'×2',2},{'×5',5}}) do
-        ui:control('fluid-scale:'..scale[2],x+(i+4)*step,editTop+3,scale[1],false,step-1)
+        ui:control('fluid-scale:'..scale[2],x+(i-1)*step,editTop+4,scale[1],false,step-1)
       end
     end
     if editing then
-      ui:control('confirm-edit',x,editTop+4,'确认'); ui:control('cancel-edit',x+10,editTop+4,'取消')
-      ui:put(x+20,editTop+4,'Enter 确认 / Esc 取消',width-20,ink.dim)
+      ui:control('confirm-edit',x,editTop+5,'确认'); ui:control('cancel-edit',x+10,editTop+5,'取消')
+      ui:put(x+20,editTop+5,'Enter 确认 / Esc 取消',width-20,ink.dim)
     end
   else ui:put(x,editTop+2,'点击表格中的值修改配置',width,ink.dim) end
   ui:put(x,b.status,'位置：驱动器编号/固定槽位；关闭后保留位置',width,ink.dim)
