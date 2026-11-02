@@ -351,7 +351,10 @@ function E:gate(c,closed)
   for _,other in ipairs(self.cfg.channels) do
     if other.redstone==c.redstone and other.gateSide==c.gateSide and self.closed[other.id]~=false then locked=true end
   end
-  self.io.proxy(c.redstone).setOutput(c.gateSide,locked and 15 or 0)
+  self.gateOutputs=self.gateOutputs or {}; local key=c.redstone..':'..c.gateSide
+  if self.gateOutputs[key]~=locked then
+    self.io.proxy(c.redstone).setOutput(c.gateSide,locked and 15 or 0); self.gateOutputs[key]=locked
+  end
 end
 function E:requestStop()
   self.stopping=true
@@ -363,6 +366,7 @@ function E:hold(a)
   return not p.hasWork()
 end
 function E:pause()
+  self.gateOutputs={}
   for _,c in ipairs(self.cfg.channels) do pcall(self.gate,self,c,true) end
   for _,a in ipairs(self.arrays) do
     pcall(self.hold,self,a)
@@ -840,7 +844,11 @@ function E:array(a)
   elseif b.phase=='run' then
     if b.continuous and (b.yielding or self:contended(a,s)) then
       if not b.yielding then b.yielding=true; self.save() end
-      for _,w in ipairs(b.workers) do self.io.proxy(w.address).setWorkAllowed(false) end
+      self.yieldClosed=self.yieldClosed or {}
+      if self.yieldClosed[a.address]~=b then
+        for _,w in ipairs(b.workers) do self.io.proxy(w.address).setWorkAllowed(false) end
+        self.yieldClosed[a.address]=b
+      end
       self.status[a.address]='等待当前加工完成'
     end
     if s.bee then self:bees(a,s,s.bee.tier); return end
@@ -850,14 +858,20 @@ function E:array(a)
       if n.hasWork() then
         local progress=b.fixed and 0 or n.getWorkProgress(); local tier=b.fixed or self.N.requested(meta.steps,progress)
         if b.fixed or n.hasWork() then
-          local state=n.getState()
-          local held=not self.io.proxy(a.address).isWorkAllowed()
-          assert(not nodeErrors[state] or state=='assembler-offline' and held,
-            (nodeErrors[state] or state)..'：'..w.address..'；请检查机器状态后重新运行程序')
-          workers[#workers+1]={progress=progress,tier=tier}
+          workers[#workers+1]={progress=progress,tier=tier,address=w.address}
           self.observations[a.address][index]={progress=progress,tier=tier,parallel=b.continuous and (w.limit or w.count) or w.count,length=meta.steps[#meta.steps].finish,fast=b.fixed~=nil,upper=b.continuous}
         end
       end
+    end
+    self.nodeHealth=self.nodeHealth or {}
+    local health=self.nodeHealth[a.address] or {at=self.now,index=1}; self.nodeHealth[a.address]=health
+    if #workers>0 and self.now-health.at>=10/#b.workers then
+      health.index=(health.index-1)%#workers+1
+      local worker=workers[health.index]; local n=self.io.proxy(worker.address)
+      local state=n.getState(); local held=not self.io.proxy(a.address).isWorkAllowed()
+      assert(not nodeErrors[state] or state=='assembler-offline' and held,
+        (nodeErrors[state] or state)..'：'..worker.address..'；请检查机器状态后重新运行程序')
+      health.at=self.now; health.index=health.index+1
     end
     if #workers==0 then
       if b.continuous and not b.yielding and next(self:items(a.buffer)) then return end
@@ -903,10 +917,15 @@ function E:drain()
 end
 function E:tick()
   self.now=self.io.time()
-  assert(self.storage.isWorkAllowed() and self.storage.hasWork(),'约束场未运行')
-  assert(self.storage.getFieldStrength()==self.cfg.fieldLimit,'场强与配置不一致，请检查是否被手动修改')
-  local p=self.storage.getWorkProgress()
-  if p<self.fieldProgress then self.ready=true end; self.fieldProgress=p
+  if self.now-(self.fieldHealthAt or -math.huge)>=10 then
+    assert(self.storage.isWorkAllowed() and self.storage.hasWork(),'约束场未运行')
+    assert(self.storage.getFieldStrength()==self.cfg.fieldLimit,'场强与配置不一致，请检查是否被手动修改')
+    self.fieldHealthAt=self.now
+  end
+  if not self.ready then
+    local p=self.storage.getWorkProgress()
+    if p<self.fieldProgress then self.ready=true end; self.fieldProgress=p
+  end
   if not self.ready then return end
   -- Every assembler must finish its old cycle before the first resource snapshot.
   if not self.recovered then
@@ -2401,7 +2420,8 @@ function R:generators(feed)
     local s=self.s.generators[g.address] or {epoch=0}; self.s.generators[g.address]=s
     if s.busy and (not busy or progress<s.progress) then s.epoch=s.epoch+1 end
     s.busy,s.progress=busy,progress
-    if not feed then p.setWorkAllowed(true) end
+    self.enabled=self.enabled or {}
+    if not feed and not self.enabled[g.address] then p.setWorkAllowed(true); self.enabled[g.address]=true end
   end end
 end
 function R:observe(f)

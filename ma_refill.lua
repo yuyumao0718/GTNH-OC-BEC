@@ -30,7 +30,8 @@ function R:generators(feed)
     local s=self.s.generators[g.address] or {epoch=0}; self.s.generators[g.address]=s
     if s.busy and (not busy or progress<s.progress) then s.epoch=s.epoch+1 end
     s.busy,s.progress=busy,progress
-    if not feed then p.setWorkAllowed(true) end
+    self.enabled=self.enabled or {}
+    if not feed and not self.enabled[g.address] then p.setWorkAllowed(true); self.enabled[g.address]=true end
   end end
 end
 function R:observe(f)
