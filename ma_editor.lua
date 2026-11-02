@@ -22,7 +22,7 @@ function F:changed()
 end
 function F:record(section)
   local r=self.ui.C.newRecord(self.schema[section].fields)
-  if r.id then r.id=unique(self.cfg[section],({feeds='供料组',channels='接收子网',beePools='蜂群池'})[section]..'-') end
+  if r.id then r.id=unique(self.cfg[section],({feeds='供料组',channels='公共原料子网',beePools='蜂群池'})[section]..'-') end
   self.cfg[section][#self.cfg[section]+1]=r
   if section=='beePools' and #self.cfg.beePools==1 then for _,a in ipairs(self.cfg.arrays) do if a.beePool=='' then a.beePool=r.id end end end
   return r
@@ -33,18 +33,15 @@ function F:removeUnusedInventory(id)
   if not id then return end
   for _,r in ipairs(self.cfg.routes) do for _,s in ipairs(r.steps) do if s.from==id or s.to==id then return end end end
   for _,a in ipairs(self.cfg.arrays) do
-    if a.io==id or a.loadPort==id or a.unloadPort==id then return end
+    if a.loadPort==id or a.unloadPort==id then return end
     for _,b in ipairs(a.beeBoxes) do if b.inventory==id then return end end
   end
   for _,f in ipairs(self.cfg.feeds) do if f.io==id then return end end
-  for _,c in ipairs(self.cfg.channels) do if c.receiver==id then return end end
   local _,i=find(self.cfg.inventories,'id',id); if i then table.remove(self.cfg.inventories,i) end
 end
 function F:removeUnusedRoute(id)
   local r,i=find(self.cfg.routes,'id',id); if not r then return end
-  for _,c in ipairs(self.cfg.channels) do if c.route==id then return end end
   for _,a in ipairs(self.cfg.arrays) do
-    if r.steps[#r.steps] and r.steps[#r.steps].to==a.io then return end
     for _,b in ipairs(a.beeBoxes) do if b.load==id or b.unload==id then return end end
   end
   for _,f in ipairs(self.cfg.feeds) do for _,c in ipairs(f.cells) do if c.route==id then return end end end
@@ -67,40 +64,9 @@ function F:newInventory(prefix)
 end
 function F:newRoute(from,to,prefix)
   local a,b=self:inventory(from),self:inventory(to)
-  local r={id=unique(self.cfg.routes,prefix..'-'),sourceSlot=1,steps={{from=from,to=to,
+  local r={id=unique(self.cfg.routes,prefix..'-'),steps={{from=from,to=to,
     transposer=b.transposer~='' and b.transposer or a.transposer,fromSide=a.side,toSide=b.side,slot=1}}}
   self.cfg.routes[#self.cfg.routes+1]=r; return r
-end
-function F:receiver(c,create)
-  local r=self:route(c.route); local x=r and self:inventory(r.steps[1].from) or self:inventory(c.receiver)
-  if not x and create then x=self:newInventory('接收元件'); c.receiver=x.id end
-  return x
-end
-function F:origin(c,create)
-  local r=self:route(c.route)
-  if r then
-    local id=r.steps[#r.steps].to; local direct=false
-    for _,a in ipairs(self.cfg.arrays) do if a.io==id then direct=true end end
-    if not direct then return self:inventory(id) end
-  end
-  return self:receiver(c,create)
-end
-function F:input(a,create)
-  local x=self:inventory(a.io)
-  if not x and create then x=self:newInventory('阵列原料端口'); a.io=x.id end
-  return x
-end
-function F:rawRoute(a,c,create)
-  if not c then return end
-  local from,to=self:origin(c,create),self:input(a,create)
-  if from and to then
-    for _,r in ipairs(self.cfg.routes) do if r.steps[1].from==from.id and r.steps[#r.steps].to==to.id then return r end end
-    if create then
-      local r=self:newRoute(from.id,to.id,'原料装载')
-      if not self:route(c.route) then r.sourceSlot=c.receiverSlot or 1; c.route=r.id end
-      return r
-    end
-  end
 end
 function F:beePort(a,mode,create)
   for _,b in ipairs(a.beeBoxes) do local r=self:route(b[mode]); if r then return self:inventory(r.steps[#r.steps].to) end end
@@ -158,7 +124,7 @@ function F:objects()
       for _,box in ipairs(self:boxes(p)) do add('box',p,'  箱子：'..box,box) end
     end
   elseif self.tab==3 then for i,a in ipairs(self.cfg.arrays) do add('array',a,'阵列：'..(a.name or tostring(i))) end
-  else for i,c in ipairs(self.cfg.channels) do add('channel',c,#self.cfg.channels==1 and '共用接收子网' or '接收子网：'..(c.name or tostring(i))) end end
+  else for i,c in ipairs(self.cfg.channels) do add('channel',c,#self.cfg.channels==1 and '公共原料子网' or '接收子网：'..(c.name or tostring(i))) end end
   return out
 end
 function F:object()
@@ -193,7 +159,7 @@ function F:form(fluidIndex)
       if count>1 then title(label..' / 第 '..i..' 步') end
       for _,spec in ipairs({{'转运器','transposer','choice','device:transposer'},
         {'来源方向','fromSide','side'},{'目标方向','toSide','side'}}) do local key=spec[2]
-        local name=key=='toSide' and i==count and label=='原料搬运' and '原料装载 ME-IO 端口方向' or spec[1]
+        local name=spec[1]
         virtual(name,spec[3],function() local rr=get(); return rr and rr.steps[i][key] or (key=='transposer' and '' or 0) end,
           function(v)
             local rr=get(true); local step=rr.steps[i]; local inv=self:inventory(step.to)
@@ -269,27 +235,7 @@ function F:form(fluidIndex)
     action('关联的传送节点：'..#x.nodes..' 个',function() self:nodePicker(x) end)
     action('绑定未分配节点',function() self:bindNodes(x) end)
     action('麦克斯韦门：'..(x.diode~='' and x.diode:sub(1,12) or '未绑定'),function() self:doorPicker(x) end)
-    field('本阵列原料子网 ME 控制器',x,'buffer','choice','device:buffer')
-    title('加工参数')
-    virtual('加工模式','choice',function() return x.parallelLimit>0 and 'continuous' or 'balanced' end,
-      function(v) x.parallelLimit=v=='continuous' and 1 or 0 end).options={{value='balanced',label='自动均分'},{value='continuous',label='连续加工'}}
-    if x.parallelLimit>0 then field('每节点并行上限',x,'parallelLimit','number',nil,1,2147483647) end
-    field('小单专用阵列',x,'reserved','boolean'); title('原料元件装载')
-    if #self.cfg.channels>1 then virtual('原料来源','choice',function() return self.cfg.channels[self.source] and self.cfg.channels[self.source].id or '' end,
-      function(v) local _,i=find(self.cfg.channels,'id',v); self.source=i end,'channels') end
-    local c=self.cfg.channels[self.source] or self.cfg.channels[1]
-    if c then
-      local r=self:rawRoute(x,c); local key=x.address..':raw'
-      if (r and #r.steps>1) or self.expanded[key] then
-        routeRows(function(create) return self:rawRoute(x,c,create) end,'原料搬运')
-      else
-        virtual('原料装载 ME-IO 端口方向','side',function() local rr=self:rawRoute(x,c); return rr and rr.steps[1].toSide or 0 end,
-          function(v) local rr=self:rawRoute(x,c,true); local step=rr.steps[1]; step.toSide=v
-            self:position(self:input(x,true),step.transposer,v)
-          end)
-      end
-      action((self.expanded[key] and '收起' or '展开')..'原料多转运器设置',function() self.expanded[key]=not self.expanded[key] end)
-    end
+    title('加工参数'); field('小单专用阵列',x,'reserved','boolean')
     title('蜂群装载配置'); field('使用的蜂群池',x,'beePool','choice','beePools')
     local pool=find(self.cfg.beePools,'id',x.beePool)
     if pool then
@@ -330,27 +276,9 @@ function F:form(fluidIndex)
   elseif o.kind=='channel' then
     title('主网下单接口'); action('主网样板 ME 接口：'..#x.patterns..' 个',function() self:patternPicker(x) end)
     for _,p in ipairs(x.patterns) do field(p.address:sub(1,12)..' 样板槽数',p,'slots','number',nil,1,128) end
-    title('接收子网与共用锁单')
-    field('接收子网 ME 控制器',x,'buffer','choice','device:buffer'); field('共用接单红石 I/O',x,'redstone','choice','device:redstone')
-    field('红石输出方向',x,'gateSide','side'); field('合并订单等待时间（秒）',self.cfg,'gatherSeconds','number',nil,0,60)
-    title('接收驱动器中的原料元件')
-    virtual('原料元件转运器','choice',function() local inv=self:receiver(x); return inv and inv.transposer or '' end,
-      function(v)
-        local inv=self:receiver(x,true)
-        for _,r in ipairs(self.cfg.routes) do local step=r.steps[1]
-          if #r.steps==1 and step.from==inv.id and step.transposer==inv.transposer then
-            local dest=self:inventory(step.to); if dest.transposer==step.transposer then dest.transposer=v end
-          end
-        end
-        self:position(inv,v,inv.side)
-      end,'device:transposer')
-    virtual('接收驱动器方向','side',function() local inv=self:receiver(x); return inv and inv.side or 0 end,
-      function(v) local inv=self:receiver(x,true); self:position(inv,inv.transposer,v) end)
-    virtual('接收元件槽位','number',function() local r=self:route(x.route); return r and r.sourceSlot or x.receiverSlot or 1 end,
-      function(v) local r=self:route(x.route); if r then r.sourceSlot=v else x.receiverSlot=v end end,nil,1,2147483647).inventory=function() return self:receiver(x) end
-    local receiver,origin=self:receiver(x),self:origin(x)
-    if receiver and origin and receiver.id~=origin.id then title('队列箱接收搬运'); routeRows(function() return self:route(x.route) end,'接收搬运')
-    end
+    title('公共原料子网与共用锁单')
+    field('公共原料子网 ME 控制器',x,'buffer','choice','device:buffer'); field('共用接单红石 I/O',x,'redstone','choice','device:redstone')
+    field('红石输出方向',x,'gateSide','side')
   elseif o.kind=='feed' then
     title('共用供料设备')
     virtual('流体转运器','choice',function() local p=self:feedPort(x); return p and p.transposer or '' end,function(v)

@@ -10,18 +10,15 @@ local function side(key,label) return num(key,label,0,0,5) end
 local function id() return field("id","名称 / ID","text","") end
 C.schema={
   dev("storage","共享约束场","bec_storage"),num("fieldLimit","约束场强度 L",1000000000000,1,9007199254740991),
-  num("gatherSeconds","合并订单等待时间（秒）",1,0,60),
   list("inventories","库存位置",{id(),dev("transposer","读取库存的转运器","transposer"),side("side","库存方向")}),
-  list("routes","元件搬运路线",{id(),num("sourceSlot","接单元件起始槽",1,1),list("steps","顺序步骤",{
+  list("routes","元件搬运路线",{id(),list("steps","顺序步骤",{
     dev("transposer","搬运用转运器","transposer"),ref("from","来源库存","inventories"),side("fromSide","来源方向"),
     ref("to","目标库存","inventories"),side("toSide","目标方向"),num("slot","中转目标槽（末步忽略）",1,1)})}),
   list("channels","AE 接单通道",{id(),list("patterns","主网样板接口列表",{dev("address","样板接口","pattern"),num("slots","样板槽数",36,1,128)}),
-    dev("buffer","接收子网 ME 控制器","buffer"),dev("redstone","接单红石 I/O","redstone"),side("gateSide","红石输出方向"),
-    ref("route","接单元件搬运路线","routes")}),
+    dev("buffer","公共原料子网 ME 控制器","buffer"),dev("redstone","接单红石 I/O","redstone"),side("gateSide","红石输出方向")}),
   list("beePools","共享蜂群池",{id(),list("cells","蜂群元件",{num("tier","等级",1,1,10),num("box","箱子编号",1,1),num("slot","箱内固定槽位",1,1)})}),
   list("arrays","观测阵列",{dev("address","观测阵列","assembler"),field("enabled","启用","boolean",true),
-    dev("buffer","本阵列原料子网 ME 控制器","buffer"),ref("io","投料 ME-IO 端口","inventories"),dev("diode","麦克斯韦门","bec_diode"),
-    num("parallelLimit","每节点并行上限（0 为自动均分）",0),field("reserved","小单专用阵列","boolean",false),
+    dev("diode","麦克斯韦门","bec_diode"),field("reserved","小单专用阵列","boolean",false),
     list("nodes","关联的传送节点",{dev("address","节点","bec_io_node")}),
     ref("beePool","使用的蜂群池","beePools"),
     list("beeBoxes","蜂群箱连接",{num("box","箱子编号",1,1),ref("inventory","蜂群箱库存位置","inventories"),
@@ -54,7 +51,6 @@ function C.defaults(cfg)
     end
   end
   fill(C.schema,cfg,'')
-  for _,r in ipairs(cfg.routes) do r.sourceSlot=r.sourceSlot or 1 end
   return cfg
 end
 function C.scan(component,cfg)
@@ -116,7 +112,7 @@ function C.validate(cfg,component,U)
   -- Disabled newly discovered arrays may remain unconfigured.
   local checked=U.copy(cfg); checked.arrays={}; for _,a in ipairs(cfg.arrays) do if a.enabled then checked.arrays[#checked.arrays+1]=a end end
   basic(C.schema,checked,"")
-  assert(#checked.arrays>0 and #cfg.channels>0,"至少启用一台阵列和一个接单通道")
+  assert(#checked.arrays>0 and #cfg.channels==1,"至少启用一台阵列，并配置唯一的公共原料子网")
   local inv,routes,feeds=U.index(cfg.inventories),U.index(cfg.routes),U.index(cfg.feeds)
   for _,section in ipairs({"inventories","routes","channels","feeds","beePools"}) do
     local seen={}; for _,x in ipairs(cfg[section]) do assert(not seen[x.id],"重复名称："..x.id); seen[x.id]=true end
@@ -145,7 +141,6 @@ function C.validate(cfg,component,U)
   end
   local patterns={}
   for _,c in ipairs(cfg.channels) do
-    local r=route(c.route); own(r.steps[1].from,r.sourceSlot,c.id)
     assert(#c.patterns>0,'接单通道至少选择一个主网样板接口')
     assert(not buffers[c.buffer],"同一接收子网请配置为一条通道，将主网接口加入该通道的样板接口列表")
     buffers[c.buffer]='channel'
@@ -154,11 +149,9 @@ function C.validate(cfg,component,U)
   for _,a in ipairs(checked.arrays) do
     assert(not arrays[a.address],"观测阵列重复分配"); arrays[a.address]=true
     assert(not diodes[a.diode],"每台阵列须使用独立的麦克斯韦门")
-    assert(buffers[a.buffer]~='channel',"阵列原料子网不能与接收子网相同")
-    diodes[a.diode],buffers[a.buffer]=true,'array'
+    diodes[a.diode]=true
     assert(#a.nodes>=1 and #a.nodes<=16,"每台阵列须选择 1–16 个节点")
     for _,n in ipairs(a.nodes) do assert(not nodes[n.address],"节点重复分配："..n.address); nodes[n.address]=true end
-    port(a.io,'input:'..a.buffer,true)
     local pool=assert(pools[a.beePool],"请选择使用的蜂群池："..a.address)
     local boxes,ends={},{}
     for _,box in ipairs(a.beeBoxes) do

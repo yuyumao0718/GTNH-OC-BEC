@@ -13,16 +13,12 @@ function L:size(id) local e=assert(self.inventories[id]); return assert(self.pro
 function L:ends(id)
   local r=assert(self.routes[id],"路线不存在："..tostring(id)); return r.steps[1].from,r.steps[#r.steps].to
 end
-function L:find(from,to)
-  for _,r in ipairs(self.cfg.routes) do local a,b=self:ends(r.id); if a==from and b==to then return r.id end end
-end
 local function key(id,slot) return id..":"..slot end
 function L:locks(except)
   local locks={}
   for owner,m in pairs(self.state.moves) do if owner~=except then for k in pairs(m.locks) do locks[k]=owner end end end
   return locks
 end
-function L:claimed(id,slot) return self:locks()[key(id,slot)]~=nil end
 function L:start(owner,route,reverse,sourceSlot,targetSlot,ioSink)
   if self.state.moves[owner] then return true end
   local steps=assert(self.routes[route]).steps
