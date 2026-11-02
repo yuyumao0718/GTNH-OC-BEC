@@ -100,13 +100,23 @@ function F:feeds() return #self.cfg.feeds>0 and self.cfg.feeds or {self.feedDraf
 function F:at(transposer,side)
   if transposer~='' then for _,inv in ipairs(self.cfg.inventories) do if inv.transposer==transposer and inv.side==side then return inv end end end
 end
+function F:fluidPosition(material)
+  for i,m in ipairs(self.ui.M) do if m.source==material then return math.floor((i-1)/10)+1,(i-1)%10+1 end end
+end
+function F:placeFeedCell(feed,cell)
+  local drive,slot=self:fluidPosition(cell.material)
+  local port=self:feedPort(feed,true); local side=feed['drive'..drive..'Side']
+  local r=self:route(cell.route); local step=r and r.steps[1]; local old=step and step.from
+  local inv=self:at(port.transposer,side) or self:newInventory('流体驱动器')
+  inv.transposer,inv.side=port.transposer,side
+  if step then step.from,step.fromSide,step.transposer=inv.id,side,port.transposer
+  else cell.route=self:newRoute(inv.id,port.id,'预缓存搬运').id end
+  cell.slot=slot; self:removeUnusedInventory(old)
+end
 function F:feedCell(feed,material,enabled)
   local cell,i=find(feed.cells,'material',material)
   if enabled and not cell then
-    local port=self:feedPort(feed,true); local side=port.side==0 and 1 or 0
-    local inv=self:at(port.transposer,side) or self:newInventory('流体元件')
-    inv.transposer=port.transposer; inv.side=side
-    cell={material=material,slot=1,route=self:newRoute(inv.id,port.id,'预缓存搬运').id}
+    cell={material=material}; self:placeFeedCell(feed,cell)
     feed.cells[#feed.cells+1]=cell
   elseif not enabled and cell then table.remove(feed.cells,i); self:removeUnusedRoute(cell.route) end
   return cell
@@ -115,7 +125,7 @@ function F:objects()
   local out={}; local function add(kind,value,label,box) out[#out+1]={kind=kind,value=value,label=label,box=box} end
   if self.tab==1 then
     add('generators',self.cfg.generators,'纠缠装置')
-    for i,f in ipairs(self:feeds()) do add('feed',f,'供料：'..(f.name or (#self.cfg.feeds<=1 and '主网流体' or tostring(i)))) end
+    for _,f in ipairs(self:feeds()) do add('feed',f,'预缓存设备') end
     add('fluids',self.fluidRows,'流体预缓存')
   elseif self.tab==2 then
     add('field',self.cfg,'约束场')
@@ -191,26 +201,11 @@ function F:form(fluidIndex)
     title(self.ui.M.name(x.material))
     virtual('启用预缓存','boolean',function() return find(self.cfg.bands,'material',x.material)~=nil end,function(v)
       local _,i=find(self.cfg.bands,'material',x.material); if v and not i then self.cfg.bands[#self.cfg.bands+1]=x elseif not v and i then table.remove(self.cfg.bands,i) end
+      self:feedCell(self:feeds()[1],x.material,v)
     end)
     for _,spec in ipairs({{'库存下限 L','low',0},{'补充目标 L','high',1}}) do
       field(spec[1],x,spec[2],'number',nil,spec[3])
       add({kind='presets',label=spec[1]..'快捷值',set=function(v) x[spec[2]]=v end})
-    end
-    for _,feed in ipairs(self:feeds()) do
-      title(#self.cfg.feeds<=1 and '主网供料位置' or '供料：'..self.ui:recordName(self.cfg,'feeds',feed))
-      virtual('从主网供料','boolean',function() return find(feed.cells,'material',x.material)~=nil end,
-        function(v) self:feedCell(feed,x.material,v) end)
-      local cell=find(feed.cells,'material',x.material)
-      if cell then
-        local r=self:route(cell.route)
-        virtual('驱动器方向','side',function() return r.steps[1].fromSide end,function(v)
-          local step=r.steps[1]; local old=step.from
-          local inv=self:at(step.transposer,v) or self:newInventory('流体元件')
-          inv.transposer,inv.side=step.transposer,v; step.from,step.fromSide=inv.id,v
-          self:removeUnusedInventory(old)
-        end)
-        field('元件槽位',cell,'slot','number',nil,1,10).inventory=function() return self:inventory(r.steps[1].from) end
-      end
     end
   elseif o.kind=='generators' then
     local available={}
@@ -281,7 +276,7 @@ function F:form(fluidIndex)
     field('公共原料子网 ME 控制器',x,'buffer','choice','device:buffer'); field('共用接单红石 I/O',x,'redstone','choice','device:redstone')
     field('红石输出方向',x,'gateSide','side')
   elseif o.kind=='feed' then
-    title('共用供料设备')
+    title('预缓存共用设备')
     virtual('流体转运器','choice',function() local p=self:feedPort(x); return p and p.transposer or '' end,function(v)
       local p=self:feedPort(x,true); self:position(p,v,p.side)
       for _,cell in ipairs(x.cells) do local r=self:route(cell.route)
@@ -292,10 +287,14 @@ function F:form(fluidIndex)
     end,'device:transposer')
     virtual('主网补库 ME-IO 端口方向','side',function() local p=self:feedPort(x); return p and p.side or 0 end,
       function(v) local p=self:feedPort(x,true); self:position(p,p.transposer,v) end)
-    title('各流体的驱动器方向与槽位在流体页填写')
-    for _,cell in ipairs(x.cells) do local r=self:route(cell.route)
-      if #r.steps>1 then title('已有中转：'..self.ui.M.name(cell.material,true)); routeRows(function() return r end,'已有供料搬运') end
+    for drive=1,2 do
+      local key='drive'..drive..'Side'
+      virtual((drive==1 and '第一台' or '第二台')..'流体驱动器方向','side',function() return x[key] end,function(v)
+        x[key]=v
+        for _,cell in ipairs(x.cells) do if self:fluidPosition(cell.material)==drive then self:placeFeedCell(x,cell) end end
+      end)
     end
+    title('按流体表顺序放置：第一台 1～10，第二台 1～9')
   end
   return rows
 end
@@ -342,7 +341,7 @@ function F:patternPicker(c)
     for _,v in ipairs(values) do if want[v] then result[#result+1]={address=v,slots=36} end end; c.patterns=result
   end}
 end
-local fluidLabels={enabled='启用预缓存',low='库存下限 L',high='补充目标 L',supply='从主网供料',side='驱动器方向',slot='元件槽位'}
+local fluidLabels={enabled='启用预缓存',low='库存下限 L',high='补充目标 L'}
 function F:fluidField(index,key,rows)
   for _,f in ipairs(rows or self:form(index)) do if f.label==fluidLabels[key] then f.fluid=index; f.key=key; return f end end
 end
@@ -390,11 +389,15 @@ function F:act(action,button)
   elseif action:match('^fluid:') then
     local index,key=action:match('^fluid:(%d+):(%w+)$'); self.fluidIndex,self.fluidKey=tonumber(index),key
     if key~='name' then local f=self:fluidField(self.fluidIndex,key)
-      if f then self:activate(f,button) else self.message='请先启用该流体的主网供料，再填写驱动器方向和槽位' end
+      if f then self:activate(f,button) end
     end
   elseif action:match('^preset:') then
     local index,value=action:match('^preset:(%d+):(.+)$'); self:form()[tonumber(index)].set(tonumber(value)); self:changed()
-  elseif action=='save' then local ok,err=pcall(function() self.ui.C.validate(self.cfg,self.component,self.save.U); self.save.write(self.cfg) end)
+  elseif action=='save' then local ok,err=pcall(function()
+      for _,band in ipairs(self.cfg.bands) do self:feedCell(self:feeds()[1],band.material,true) end
+      for _,feed in ipairs(self.cfg.feeds) do for _,cell in ipairs(feed.cells) do self:placeFeedCell(feed,cell) end end
+      self.ui.C.validate(self.cfg,self.component,self.save.U); self.save.write(self.cfg)
+    end)
     if ok then self.saved=true; self.done=true else self.message=tostring(err):gsub('^.-:%d+: ','') end
   elseif action=='refresh' then
     self.devices=self.ui.C.scan(self.component,self.cfg)
@@ -492,9 +495,9 @@ end
 function F:drawFluids(x,width,b)
   local ui,ink=self.ui,self.ui.ink
   local numberWidth=width>=80 and 10 or 7
-  local widths={width-6-numberWidth*2-6-6-6-4,6,numberWidth,numberWidth,6,6,4}
-  local keys={'name','enabled','low','high','supply','side','slot'}
-  local labels={'流体','预缓存','下限 L','目标 L','供料','方向','槽位'}
+  local widths={6,math.min(24,width-6-numberWidth*2-7-4),numberWidth,numberWidth,7}
+  local keys={'enabled','name','low','high','position'}
+  local labels={'预缓存','流体','下限 L','目标 L','位置'}
   local positions={}; local px=x
   for i,key in ipairs(keys) do positions[key]=px; ui:put(px,b.top,labels[i],widths[i],ink.dim); px=px+widths[i]+1 end
   local editTop=b.bottom-5; local per=math.max(1,editTop-b.top-1)
@@ -511,11 +514,14 @@ function F:drawFluids(x,width,b)
     for col,key in ipairs(keys) do
       local f=key~='name' and self:fluidField(index,key,fields)
       local value=key=='name' and ui.M.name(row.material,true) or '--'
+      if key=='position' then local drive,slot=self:fluidPosition(row.material); value=drive..'/'..slot end
       if f then local v=f.get()
-        value=(key=='low' or key=='high') and short(v) or key=='side' and sides[v+1] or self:value(f)
+        value=(key=='low' or key=='high') and short(v) or (v and '启用' or '关闭')
       end
       if key=='name' or f then
-        ui:control('fluid:'..index..':'..key,positions[key],y,value,index==self.fluidIndex and key==self.fluidKey,widths[col])
+        local selected=index==self.fluidIndex and key==self.fluidKey
+        ui:control('fluid:'..index..':'..key,positions[key],y,value,selected,widths[col])
+        if key=='enabled' and not selected then ui:put(positions[key],y,value,widths[col],f.get() and ink.green or ink.dim,ink.panel) end
       else ui:put(positions[key],y,value,widths[col],ink.dim) end
     end
   end
@@ -538,7 +544,7 @@ function F:drawFluids(x,width,b)
       ui:put(x+20,editTop+4,'Enter 确认 / Esc 取消',width-20,ink.dim)
     end
   else ui:put(x,editTop+2,'点击表格中的值修改配置',width,ink.dim) end
-  ui:put(x,b.status,'方向/槽位：左键下一项，右键上一项；首尾循环',width,ink.dim)
+  ui:put(x,b.status,'位置：驱动器编号/固定槽位；关闭后保留位置',width,ink.dim)
 end
 function F:draw()
   local ui=self.ui; local ink=ui.ink; ui:begin('BEC / 多观测阵列配置')
@@ -605,7 +611,8 @@ function F:draw()
       end
     end
     if #rows==0 then ui:put(x,6,'请先添加配置，或按 F 刷新设备',width,ink.dim) end
-    ui:put(x,b.status,'方向/槽位：左键下一项，右键上一项；首尾循环',width,ink.dim)
+    ui:put(x,b.status,o and o.kind=='feed' and '方向：左键下一项，右键上一项；首尾循环' or
+      '方向/槽位：左键下一项，右键上一项；首尾循环',width,ink.dim)
   end
   ui:control('prev',x,b.nav,'上一页'); ui:control('next',x+12,b.nav,'下一页'); ui:control('refresh',x+24,b.nav,'F 刷新')
   ui:wrap(2,h-2,self.message,w-3,2,ink.amber)

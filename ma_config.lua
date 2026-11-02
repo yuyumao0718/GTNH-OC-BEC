@@ -26,6 +26,7 @@ C.schema={
       ref("load","装载路线","routes"),ref("unload","回收路线","routes")})}),
   list("generators","纠缠装置",{dev("address","纠缠装置","generator"),ref("feed","纠缠装置原料子网","feeds")}),
   list("feeds","纠缠装置供料组",{id(),ref("io","主网补库 ME-IO 端口","inventories"),
+    num("drive1Side","第一台流体驱动器方向",0,0,5),num("drive2Side","第二台流体驱动器方向",2,0,5),
     list("cells","分区流体元件",{ref("material","流体","materials"),num("slot","驱动器槽位",1,1),
       ref("route","补库元件搬运路线","routes")})}),
   list("bands","共享流体目标",{ref("material","流体","materials"),num("low","下限 L",1000000,0,9007199254740991),
