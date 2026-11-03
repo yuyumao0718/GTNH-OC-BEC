@@ -108,8 +108,6 @@ local ok, err = xpcall(function()
                 '检查通过：'
                     .. #engine.arrays
                     .. ' 台阵列，'
-                    .. #cfg.channels
-                    .. ' 条接单通道，'
                     .. #cfg.generators
                     .. ' 台纠缠装置。'
             )
@@ -259,18 +257,7 @@ C.schema = {
         dev('transposer', '读取库存的转运器', 'transposer'),
         side('side', '库存方向'),
     }),
-    list('routes', '元件搬运路线', {
-        idField(),
-        list('steps', '顺序步骤', {
-            dev('transposer', '搬运用转运器', 'transposer'),
-            ref('from', '来源库存', 'inventories'),
-            side('fromSide', '来源方向'),
-            ref('to', '目标库存', 'inventories'),
-            side('toSide', '目标方向'),
-            num('slot', '中转目标槽（末步忽略）', 1, 1),
-        }),
-    }),
-    list('channels', 'AE 接单通道', {
+    list('channels', 'AE下单', {
         idField(),
         list(
             'patterns',
@@ -295,11 +282,11 @@ C.schema = {
         dev('diode', '麦克斯韦门', 'bec_diode'),
         list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
         ref('beePool', '使用的蜂群池', 'beePools'),
+        ref('loadPort', '蜂群装载 ME-IO 端口', 'inventories'),
+        ref('unloadPort', '蜂群回收 ME-IO 端口', 'inventories'),
         list('beeBoxes', '蜂群箱连接', {
             num('box', '箱子编号', 1, 1),
             ref('inventory', '蜂群箱库存位置', 'inventories'),
-            ref('load', '装载路线', 'routes'),
-            ref('unload', '回收路线', 'routes'),
         }),
     }),
     list('generators', '纠缠装置', {
@@ -308,13 +295,13 @@ C.schema = {
     }),
     list('feeds', '纠缠装置供料组', {
         idField(),
-        ref('io', '主网补库 ME-IO 端口', 'inventories'),
+        ref('io', '主网流体转运 ME-IO 端口', 'inventories'),
         num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
         num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
         list('cells', '分区流体元件', {
             ref('material', '流体', 'materials'),
             num('slot', '驱动器槽位', 1, 1),
-            ref('route', '补库元件搬运路线', 'routes'),
+            ref('inventory', '流体驱动器', 'inventories'),
         }),
     }),
     list('bands', '共享流体目标', {
@@ -494,8 +481,8 @@ function C.validate(cfg, component, U)
         #checked.arrays > 0 and #cfg.channels == 1,
         '至少启用一台阵列，并配置唯一的公共原料子网'
     )
-    local inv, routes, feeds = U.index(cfg.inventories), U.index(cfg.routes), U.index(cfg.feeds)
-    for _, section in ipairs({ 'inventories', 'routes', 'channels', 'feeds', 'beePools' }) do
+    local inv, feeds = U.index(cfg.inventories), U.index(cfg.feeds)
+    for _, section in ipairs({ 'inventories', 'channels', 'feeds', 'beePools' }) do
         local seen = {}
         for _, x in ipairs(cfg[section]) do
             assert(not seen[x.id], '重复名称：' .. x.id)
@@ -513,22 +500,14 @@ function C.validate(cfg, component, U)
         assert(not owners[key], '元件槽位重复：' .. key)
         owners[key] = true
     end
-    for _, r in ipairs(cfg.routes) do
-        assert(#r.steps > 0, '路线没有步骤：' .. r.id)
-        for i, s in ipairs(r.steps) do
-            assert(
-                inv[s.from] and inv[s.to] and s.from ~= s.to,
-                '路线的起点或终点无效：' .. r.id
-            )
-            assert(s.fromSide ~= s.toSide, '来源和目标方向相同：' .. r.id)
-            assert(
-                i == 1 or r.steps[i - 1].to == s.from,
-                '路线不连通：上一步终点与下一步起点不同：' .. r.id
-            )
-        end
-    end
-    local function route(id)
-        return assert(routes[id], '未知路线：' .. tostring(id))
+    local function connected(from, to)
+        local a, b = inv[from], inv[to]
+        assert(a and b, '请配置元件容器和 ME-IO 端口')
+        assert(
+            a.transposer == b.transposer,
+            '元件容器和 ME-IO 端口须连接同一个转运器'
+        )
+        assert(a.side ~= b.side, '元件容器和 ME-IO 端口不能使用同一方向')
     end
     local pools = U.index(cfg.beePools)
     local boxPools = {}
@@ -543,7 +522,7 @@ function C.validate(cfg, component, U)
     end
     local patterns = {}
     for _, c in ipairs(cfg.channels) do
-        assert(#c.patterns > 0, '接单通道至少选择一个主网样板接口')
+        assert(#c.patterns > 0, 'AE下单至少选择一个主网样板接口')
         for _, p in ipairs(c.patterns) do
             assert(not patterns[p.address], '样板接口重复分配：' .. p.address)
             patterns[p.address] = true
@@ -560,7 +539,10 @@ function C.validate(cfg, component, U)
             nodes[n.address] = true
         end
         local pool = assert(pools[a.beePool], '请选择使用的蜂群池：' .. a.address)
-        local boxes, ends = {}, {}
+        local boxes = {}
+        port(a.loadPort)
+        port(a.unloadPort)
+        connected(a.loadPort, a.unloadPort)
         for _, box in ipairs(a.beeBoxes) do
             assert(
                 not boxes[box.box],
@@ -584,23 +566,8 @@ function C.validate(cfg, component, U)
             end
             assert(used, '蜂群池中没有登记该箱子的元件：' .. key)
             boxPools[box.inventory] = key
-            for _, mode in ipairs({ 'load', 'unload' }) do
-                local r = route(box[mode])
-                assert(
-                    r.steps[1].from == box.inventory,
-                    '蜂群路线必须从对应的蜂群箱开始'
-                )
-                local target = r.steps[#r.steps].to
-                if ends[mode] then
-                    assert(
-                        ends[mode] == target,
-                        '同一阵列的蜂群箱须共用装载端口和回收端口'
-                    )
-                else
-                    port(target)
-                    ends[mode] = target
-                end
-            end
+            connected(box.inventory, a.loadPort)
+            connected(box.inventory, a.unloadPort)
         end
         for _, c in ipairs(pool.cells) do
             assert(
@@ -641,12 +608,8 @@ function C.validate(cfg, component, U)
                 '原料网的流体重复配置，或未设置补库目标'
             )
             seen[c.material] = true
-            local r = route(c.route)
-            assert(
-                r.steps[#r.steps].to == f.io,
-                '补库路线的终点必须是所选的 ME-IO 端口'
-            )
-            own(r.steps[1].from, c.slot)
+            connected(c.inventory, f.io)
+            own(c.inventory, c.slot)
         end
     end
     if component then
@@ -799,11 +762,8 @@ function E:check()
     self:catalogsRead()
     local needed = 0
     for _, a in ipairs(self.arrays) do
-        for _, box in ipairs(a.beeBoxes) do
-            for _, r in ipairs({ box.load, box.unload }) do
-                local _, id = self.log:ends(r)
-                assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
-            end
+        for _, id in ipairs({ a.loadPort, a.unloadPort }) do
+            assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
         end
         local s = self.s.arrays[a.address]
         local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
@@ -1490,13 +1450,12 @@ function E:bees(a, s, want)
     local b = s.bee
     local cell = s.lease[b.tier]
     local box = self:beeAccess(a, cell)
-    local route = b.loading and box.load or box.unload
-    local _, port = self.log:ends(route)
+    local port = b.loading and a.loadPort or a.unloadPort
     local slot = cell.slot
     local owner = 'bee:' .. a.address
     self.status[a.address] = (b.loading and '装载 T' or '回收 T') .. b.tier .. ' 蜂群'
     if b.phase == 'out' then
-        if self.log:step(owner, route, false, slot, 1, true) then
+        if self.log:step(owner, box.inventory, port, slot, 1, true) then
             b.phase = 'io'
             self.log:finish(owner)
         end
@@ -1506,7 +1465,7 @@ function E:bees(a, s, want)
             self.save()
         end
     elseif b.phase == 'back' then
-        if self.log:step(owner, route, true, 7, slot) then
+        if self.log:step(owner, port, box.inventory, 7, slot) then
             b.phase = 'sync'
             self.log:finish(owner)
         end
@@ -1897,7 +1856,7 @@ return E
 files[#files + 1] = {
     name = 'ma_editor.lua',
     code = [=[
--- Stopped-mode forms edit existing records; opening a page never rebuilds route IDs.
+-- Stopped-mode forms edit device bindings and settings.
 local F = {}
 F.__index = F
 local tabs = {
@@ -1939,8 +1898,7 @@ function F.new(ui, cfg, component, save)
         fluidPage = 1,
         fluidKey = 'low',
         extraBoxes = {},
-        expanded = {},
-        message = '修改记入草稿；按 S 校验并保存',
+        message = '修改会自动暂存；按 S 校验并保存',
         schema = {},
     }, F)
     for _, f in ipairs(ui.C.schema) do
@@ -1975,7 +1933,7 @@ function F:changed()
     if self.save.draft then
         self.save.draft(self.cfg)
     end
-    self.message = '修改已记入草稿；按 S 校验并保存后生效'
+    self.message = '修改已暂存；按 S 校验并保存后生效'
 end
 
 function F:record(section)
@@ -2002,20 +1960,9 @@ function F:inventory(id)
     return find(self.cfg.inventories, 'id', id)
 end
 
-function F:route(id)
-    return find(self.cfg.routes, 'id', id)
-end
-
 function F:removeUnusedInventory(id)
     if not id then
         return
-    end
-    for _, r in ipairs(self.cfg.routes) do
-        for _, s in ipairs(r.steps) do
-            if s.from == id or s.to == id then
-                return
-            end
-        end
     end
     for _, a in ipairs(self.cfg.arrays) do
         if a.loadPort == id or a.unloadPort == id then
@@ -2031,6 +1978,11 @@ function F:removeUnusedInventory(id)
         if f.io == id then
             return
         end
+        for _, c in ipairs(f.cells) do
+            if c.inventory == id then
+                return
+            end
+        end
     end
     local _, i = find(self.cfg.inventories, 'id', id)
     if i then
@@ -2038,48 +1990,7 @@ function F:removeUnusedInventory(id)
     end
 end
 
-function F:removeUnusedRoute(id)
-    local r, i = find(self.cfg.routes, 'id', id)
-    if not r then
-        return
-    end
-    for _, a in ipairs(self.cfg.arrays) do
-        for _, b in ipairs(a.beeBoxes) do
-            if b.load == id or b.unload == id then
-                return
-            end
-        end
-    end
-    for _, f in ipairs(self.cfg.feeds) do
-        for _, c in ipairs(f.cells) do
-            if c.route == id then
-                return
-            end
-        end
-    end
-    table.remove(self.cfg.routes, i)
-    for _, step in ipairs(r.steps) do
-        self:removeUnusedInventory(step.from)
-        self:removeUnusedInventory(step.to)
-    end
-end
-
 function F:position(inv, transposer, side)
-    -- Update matching access to the same container, while retaining other transposers' faces.
-    for _, r in ipairs(self.cfg.routes) do
-        for _, step in ipairs(r.steps) do
-            if step.transposer == inv.transposer then
-                if step.from == inv.id and step.fromSide == inv.side then
-                    step.transposer = transposer
-                    step.fromSide = side
-                end
-                if step.to == inv.id and step.toSide == inv.side then
-                    step.transposer = transposer
-                    step.toSide = side
-                end
-            end
-        end
-    end
     inv.transposer, inv.side = transposer, side
 end
 
@@ -2089,35 +2000,12 @@ function F:newInventory(prefix)
     return x
 end
 
-function F:newRoute(from, to, prefix)
-    local a, b = self:inventory(from), self:inventory(to)
-    local r = {
-        id = unique(self.cfg.routes, prefix .. '-'),
-        steps = {
-            {
-                from = from,
-                to = to,
-                transposer = b.transposer ~= '' and b.transposer or a.transposer,
-                fromSide = a.side,
-                toSide = b.side,
-                slot = 1,
-            },
-        },
-    }
-    self.cfg.routes[#self.cfg.routes + 1] = r
-    return r
-end
-
 function F:beePort(a, mode, create)
-    for _, b in ipairs(a.beeBoxes) do
-        local r = self:route(b[mode])
-        if r then
-            return self:inventory(r.steps[#r.steps].to)
-        end
-    end
     local x = self:inventory(a[mode .. 'Port'])
     if not x and create then
-        x = self:newInventory(mode == 'load' and '蜂群装载端口' or '蜂群回收端口')
+        x = self:newInventory(
+            mode == 'load' and '蜂群装载 ME-IO 端口' or '蜂群回收 ME-IO 端口'
+        )
         a[mode .. 'Port'] = x.id
     end
     return x
@@ -2133,13 +2021,8 @@ function F:beeBox(a, number, create)
         end
         b = { box = number, inventory = inv.id }
         a.beeBoxes[#a.beeBoxes + 1] = b
-        for _, mode in ipairs({ 'load', 'unload' }) do
-            b[mode] = self:newRoute(
-                b.inventory,
-                self:beePort(a, mode, true).id,
-                mode == 'load' and '蜂群装载' or '蜂群回收'
-            ).id
-        end
+        self:beePort(a, 'load', true)
+        self:beePort(a, 'unload', true)
     end
     return b
 end
@@ -2169,7 +2052,7 @@ function F:feedPort(feed, create)
     end
     local inv = self:inventory(feed.io)
     if not inv and create then
-        inv = self:newInventory('预缓存端口')
+        inv = self:newInventory('主网流体转运 ME-IO 端口')
         feed.io = inv.id
     end
     return inv
@@ -2201,16 +2084,10 @@ function F:placeFeedCell(feed, cell)
     local drive, slot = self:fluidPosition(cell.material)
     local port = self:feedPort(feed, true)
     local side = feed['drive' .. drive .. 'Side']
-    local r = self:route(cell.route)
-    local step = r and r.steps[1]
-    local old = step and step.from
+    local old = cell.inventory
     local inv = self:at(port.transposer, side) or self:newInventory('流体驱动器')
     inv.transposer, inv.side = port.transposer, side
-    if step then
-        step.from, step.fromSide, step.transposer = inv.id, side, port.transposer
-    else
-        cell.route = self:newRoute(inv.id, port.id, '预缓存搬运').id
-    end
+    cell.inventory = inv.id
     cell.slot = slot
     self:removeUnusedInventory(old)
 end
@@ -2223,7 +2100,7 @@ function F:feedCell(feed, material, enabled)
         feed.cells[#feed.cells + 1] = cell
     elseif not enabled and cell then
         table.remove(feed.cells, i)
-        self:removeUnusedRoute(cell.route)
+        self:removeUnusedInventory(cell.inventory)
     end
     return cell
 end
@@ -2330,87 +2207,6 @@ function F:form(fluidIndex)
             hi = hi or 9007199254740991,
         })
     end
-    local function endpoint(label, get)
-        virtual(label .. '转运器', 'choice', function()
-            local v = get()
-            return v and v.transposer or ''
-        end, function(v)
-            local inv = get(true)
-            self:position(inv, v, inv.side)
-        end, 'device:transposer')
-        virtual(label .. '方向', 'side', function()
-            local v = get()
-            return v and v.side or 0
-        end, function(v)
-            local inv = get(true)
-            self:position(inv, inv.transposer, v)
-        end)
-    end
-    local function routeRows(get, label)
-        local r = get()
-        local count = r and #r.steps or 1
-        for i = 1, count do
-            if count > 1 then
-                title(label .. ' / 第 ' .. i .. ' 步')
-            end
-            for _, spec in ipairs({
-                { '转运器', 'transposer', 'choice', 'device:transposer' },
-                { '来源方向', 'fromSide', 'side' },
-                { '目标方向', 'toSide', 'side' },
-            }) do
-                local key = spec[2]
-                local name = spec[1]
-                virtual(name, spec[3], function()
-                    local rr = get()
-                    return rr and rr.steps[i][key] or (key == 'transposer' and '' or 0)
-                end, function(v)
-                    local rr = get(true)
-                    local step = rr.steps[i]
-                    local inv = self:inventory(step.to)
-                    local readHere = inv.transposer == step.transposer and inv.side == step.toSide
-                    step[key] = v
-                    if
-                        (i == #rr.steps or readHere) and (key == 'transposer' or key == 'toSide')
-                    then
-                        self:position(inv, step.transposer, step.toSide)
-                    end
-                end, spec[4])
-            end
-            if i < count then
-                field('中转槽位', r.steps[i], 'slot', 'number', nil, 1, 2147483647).inventory = function()
-                    return self:inventory(r.steps[i].to)
-                end
-            end
-        end
-        action('增加中转步骤', function()
-            local rr = get(true)
-            local last = rr.steps[#rr.steps]
-            local mid = self:newInventory('中转容器')
-            mid.transposer, mid.side = last.transposer, last.toSide
-            local to = last.to
-            last.to = mid.id
-            rr.steps[#rr.steps + 1] = {
-                from = mid.id,
-                to = to,
-                transposer = last.transposer,
-                fromSide = last.toSide,
-                toSide = 0,
-                slot = 1,
-            }
-        end)
-        if count > 1 then
-            action('移除最后中转步骤', function()
-                local rr = get()
-                local last = table.remove(rr.steps)
-                local prev = rr.steps[#rr.steps]
-                local mid = prev.to
-                local target = self:inventory(last.to)
-                prev.to = last.to
-                prev.toSide = target.transposer == prev.transposer and target.side or last.toSide
-                self:removeUnusedInventory(mid)
-            end)
-        end
-    end
     if o.kind == 'field' then
         field('约束场设备', x, 'storage', 'choice', 'device:bec_storage')
         field('约束场强度 L', x, 'fieldLimit', 'number', nil, 1)
@@ -2462,11 +2258,6 @@ function F:form(fluidIndex)
                     end
                 end
             )
-        end
-        if #self.cfg.feeds > 1 then
-            for _, g in ipairs(self.cfg.generators) do
-                field(g.address:sub(1, 12) .. ' 使用供料组', g, 'feed', 'choice', 'feeds')
-            end
         end
     elseif o.kind == 'pool' then
         field('蜂群池名称', x, 'name', 'text')
@@ -2520,23 +2311,12 @@ function F:form(fluidIndex)
                 for _, box in ipairs(self:boxes(pool)) do
                     local b = self:beeBox(x, box, true)
                     self:inventory(b.inventory).transposer = v
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        local r = self:route(b[mode])
-                        if #r.steps == 1 then
-                            r.steps[1].transposer = v
-                        end
-                    end
                 end
             end, 'device:transposer')
             for _, spec in ipairs({ { 'load', '装载' }, { 'unload', '回收' } }) do
                 local mode = spec[1]
                 virtual(spec[2] .. ' ME-IO 端口方向', 'side', common(mode, 'side'), function(v)
                     self:beePort(x, mode, true).side = v
-                    for _, box in ipairs(self:boxes(pool)) do
-                        local b = self:beeBox(x, box, true)
-                        local r = self:route(b[mode])
-                        r.steps[#r.steps].toSide = v
-                    end
                 end)
             end
             local boxes = self:boxes(pool)
@@ -2554,8 +2334,6 @@ function F:form(fluidIndex)
                     action('移除未登记的箱子 ' .. box .. ' 连接', function()
                         local b, i = find(x.beeBoxes, 'box', box)
                         table.remove(x.beeBoxes, i)
-                        self:removeUnusedRoute(b.load)
-                        self:removeUnusedRoute(b.unload)
                         self:removeUnusedInventory(b.inventory)
                     end)
                 end
@@ -2566,33 +2344,7 @@ function F:form(fluidIndex)
                 end, function(v)
                     local b = self:beeBox(x, box, true)
                     self:inventory(b.inventory).side = v
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        self:route(b[mode]).steps[1].fromSide = v
-                    end
                 end)
-                local key = x.address .. ':box:' .. box
-                action(
-                    (self.expanded[key] and '收起' or '展开')
-                        .. '箱子 '
-                        .. box
-                        .. ' 多转运器设置',
-                    function()
-                        self.expanded[key] = not self.expanded[key]
-                    end
-                )
-                if self.expanded[key] then
-                    endpoint('箱子 ' .. box .. ' 读取', function(create)
-                        local b = self:beeBox(x, box, create)
-                        return b and self:inventory(b.inventory)
-                    end)
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        title(mode == 'load' and '装载搬运' or '回收搬运')
-                        routeRows(function(create)
-                            local b = self:beeBox(x, box, create)
-                            return b and self:route(b[mode])
-                        end, '蜂群搬运')
-                    end
-                end
             end
         end
     elseif o.kind == 'channel' then
@@ -2616,16 +2368,10 @@ function F:form(fluidIndex)
             local p = self:feedPort(x, true)
             self:position(p, v, p.side)
             for _, cell in ipairs(x.cells) do
-                local r = self:route(cell.route)
-                if #r.steps == 1 then
-                    local step = r.steps[1]
-                    step.transposer = v
-                    local inv = self:inventory(step.from)
-                    inv.transposer = v
-                end
+                self:inventory(cell.inventory).transposer = v
             end
         end, 'device:transposer')
-        virtual('主网补库 ME-IO 端口方向', 'side', function()
+        virtual('主网流体转运 ME-IO 端口方向', 'side', function()
             local p = self:feedPort(x)
             return p and p.side or 0
         end, function(v)
@@ -2838,24 +2584,8 @@ function F:commit()
 end
 
 function F:activate(f, button)
-    if button ~= nil and (f.kind == 'side' or f.inventory) then
-        local lo, hi = 0, 5
-        if f.inventory then
-            local inv = f.inventory()
-            if not inv or inv.transposer == '' then
-                self.message = '请先选择转运器和容器方向'
-                return
-            end
-            local ok, size = pcall(function()
-                return self.component.proxy(inv.transposer).getInventorySize(inv.side)
-            end)
-            if not ok or not size or size < 1 then
-                self.message = '所选方向未读取到容器，请检查转运器和方向'
-                return
-            end
-            lo, hi = 1, size
-        end
-        f.set(lo + ((f.get() or lo) - lo + (button == 1 and -1 or 1)) % (hi - lo + 1))
+    if button ~= nil and f.kind == 'side' then
+        f.set((f.get() + (button == 1 and -1 or 1)) % 6)
         self:changed()
     elseif f.kind == 'action' then
         f.run()
@@ -3530,8 +3260,7 @@ function F:draw()
         ui:put(
             x,
             b.status,
-            o and o.kind == 'feed' and '方向：左键下一项，右键上一项；首尾循环'
-                or '方向/槽位：左键下一项，右键上一项；首尾循环',
+            '方向：左键下一项，右键上一项；首尾循环',
             width,
             ink.dim
         )
@@ -3541,7 +3270,7 @@ function F:draw()
     ui:control('refresh', x + 24, b.nav, 'F 刷新')
     ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
     ui:control('save', 2, h, 'S 保存并返回')
-    ui:control('quit', 22, h, 'Q 返回 / 保留草稿')
+    ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
     ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end
@@ -3757,7 +3486,6 @@ function G:recordName(cfg, section, value)
                 channels = '接收子网',
                 feeds = '供料组',
                 inventories = '库存位置',
-                routes = '搬运路线',
             }
             return (names[section] or '配置') .. ' ' .. i
         end
@@ -3929,7 +3657,7 @@ function G:runtime(e, refill)
     )
     self:bar(2, 5, w - 12, total / e.cfg.fieldLimit)
     self:put(w - 9, 5, string.format('%.1f%%', 100 * total / e.cfg.fieldLimit), 8, ink.dim)
-    for i, label in ipairs({ '1 库存', '2 阵列', '3 通道' }) do
+    for i, label in ipairs({ '1 库存', '2 阵列', '3 AE下单' }) do
         self:button('tab:' .. i, 2 + (i - 1) * 12, 7, label, self.tab == i)
     end
     self:put(40, 7, '~ 为约数', w - 41, ink.dim)
@@ -3984,7 +3712,7 @@ function G:runtime(e, refill)
         9,
         self.tab == 1 and '凝聚态简称 / L'
             or self.tab == 2 and '观测阵列 / 当前批次'
-            or '通道 / 状态',
+            or 'AE下单 / 状态',
         left,
         ink.dim
     )
@@ -4323,16 +4051,11 @@ files[#files + 1] = {
 -- Solid-only AE orders. Replenishment has its own isolated fluid network.
 -- No machine may consume from the receiver until its admission gate has closed.
 local I = {}
-local function integer(n)
-    return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
-end
-
 function I.key(s)
-    assert(type(s) == 'table' and type(s.name) == 'string', '物品描述缺少注册名')
     local tag = ''
     if s.hasTag then
         assert(
-            type(s.tag) == 'string',
+            s.tag,
             '无法读取物品 NBT 数据，请启用 OC 的物品 NBT 访问或使用无标签原料'
         )
         tag = s.tag
@@ -4341,9 +4064,7 @@ function I.key(s)
 end
 
 function I.amount(s, fluid)
-    local n = fluid and (s.amount or s.size) or s.size
-    assert(integer(n), '物品或流体数量不是精确的非负整数')
-    return n
+    return fluid and (s.amount or s.size) or s.size
 end
 
 function I.inventory(items)
@@ -4353,7 +4074,7 @@ function I.inventory(items)
         if n > 0 then
             local key = I.key(s)
             counts[key] = (counts[key] or 0) + n
-            assert(integer(counts[key]), '库存数量超出精确数值范围')
+            assert(counts[key] <= 9007199254740991, '库存数量过大，OC 无法准确计数')
         end
     end
     return counts
@@ -4398,10 +4119,6 @@ function I.catalog(patterns)
     local result = { patterns = {} }
     for slot, p in pairs(patterns) do
         assert(p.isCraftable == false, '请将槽位 ' .. slot .. ' 中的样板设为处理样板')
-        assert(
-            type(p.inputs) == 'table' and type(p.outputs) == 'table',
-            '无法读取槽位 ' .. slot .. ' 中的样板输入和输出'
-        )
         local entry = { slot = slot, inputs = {}, outputs = {} }
         for _, s in pairs(p.inputs) do
             if s.name then
@@ -4498,11 +4215,13 @@ function I.receipts(pattern, counts)
     end
     for key, need in pairs(pattern.inputs) do
         local n = counts[key] or 0
-        assert(integer(n), '已接订单的原料数量无效')
         admitted = math.max(admitted, math.ceil(n / need))
         complete = math.min(complete, math.floor(n / need))
     end
-    assert(admitted >= 1 and admitted <= 2147483647, '已接收配方份数超出范围')
+    assert(
+        admitted >= 1 and admitted <= 2147483647,
+        '一单最多支持 2147483647 份配方，请分单下单'
+    )
     assert(
         complete >= admitted - 1,
         '多份配方原料未到齐，接收库存可能被提前抽取或发生混料'
@@ -4515,7 +4234,7 @@ return I
 files[#files + 1] = {
     name = 'ma_logistics.lua',
     code = [=[
--- Explicit routes only. Each saved move owns its slots until the route completes.
+-- Direct cell transfers. Keep both slots reserved until the move is acknowledged.
 local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
@@ -4525,7 +4244,6 @@ function L.new(cfg, state, proxy, save, U)
         proxy = proxy,
         save = save,
         inventories = U.index(cfg.inventories),
-        routes = U.index(cfg.routes),
     }, L)
 end
 
@@ -4542,11 +4260,6 @@ function L:size(id)
     )
 end
 
-function L:ends(id)
-    local r = assert(self.routes[id], '路线不存在：' .. tostring(id))
-    return r.steps[1].from, r.steps[#r.steps].to
-end
-
 local function key(id, slot)
     return id .. ':' .. slot
 end
@@ -4561,50 +4274,13 @@ function L:locks()
     return locks
 end
 
-function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
+function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
     if self.state.moves[owner] then
         return true
     end
-    local steps = assert(self.routes[route]).steps
-    local ops = {}
-    local previous = sourceSlot
-    if not reverse then
-        for i, s in ipairs(steps) do
-            local slot = i == #steps and targetSlot or s.slot
-            ops[#ops + 1] = {
-                transposer = s.transposer,
-                from = s.from,
-                to = s.to,
-                fromSide = s.fromSide,
-                toSide = s.toSide,
-                fromSlot = previous,
-                toSlot = slot,
-            }
-            previous = slot
-        end
-    else
-        for i = #steps, 1, -1 do
-            local s = steps[i]
-            local slot = i == 1 and targetSlot or steps[i - 1].slot
-            ops[#ops + 1] = {
-                transposer = s.transposer,
-                from = s.to,
-                to = s.from,
-                fromSide = s.toSide,
-                toSide = s.fromSide,
-                fromSlot = previous,
-                toSlot = slot,
-            }
-            previous = slot
-        end
-    end
-    local locks = {}
-    for _, o in ipairs(ops) do
-        locks[key(o.from, o.fromSlot)] = true
-        locks[key(o.to, o.toSlot)] = true
-    end
+    local locks = { [key(from, sourceSlot)] = true, [key(to, targetSlot)] = true }
     if ioSink then
-        locks[key(ops[#ops].to, 7)] = true
+        locks[key(to, 7)] = true
     end
     local occupied = self:locks()
     for k in pairs(locks) do
@@ -4612,12 +4288,17 @@ function L:start(owner, route, reverse, sourceSlot, targetSlot, ioSink)
             return false
         end
     end
-    for _, o in ipairs(ops) do
-        if self:stack(o.to, o.toSlot) then
-            return false
-        end
+    if self:stack(to, targetSlot) then
+        return false
     end
-    self.state.moves[owner] = { ops = ops, index = 1, locks = locks, ioSink = ioSink }
+    self.state.moves[owner] = {
+        from = from,
+        to = to,
+        fromSlot = sourceSlot,
+        toSlot = targetSlot,
+        locks = locks,
+        ioSink = ioSink,
+    }
     self.save()
     return true
 end
@@ -4627,8 +4308,7 @@ function L:tick(owner)
     if m.done then
         return true
     end
-    local o = m.ops[m.index]
-    local source, target = self:stack(o.from, o.fromSlot), self:stack(o.to, o.toSlot)
+    local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
     if not m.intent then
         assert(
             source and not target,
@@ -4638,23 +4318,22 @@ function L:tick(owner)
         self.save()
     end
     if source then
-        assert(not target, '目标槽位已被占用：' .. o.to .. ':' .. o.toSlot)
-        local n, err = self.proxy(o.transposer)
-            .transferItem(o.fromSide, o.toSide, 1, o.fromSlot, o.toSlot)
+        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
+        local from, to = self.inventories[m.from], self.inventories[m.to]
+        local n, err = self.proxy(from.transposer)
+            .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
         assert(n ~= nil, err or '元件搬运失败')
         if n == 0 then
             return false
         end
-        assert(n == 1, '未能搬运一颗元件，请检查来源和目标槽位')
     else
         assert(
-            target or (m.ioSink and m.index == #m.ops and self:stack(o.to, 7)),
+            target or (m.ioSink and self:stack(m.to, 7)),
             '找不到正在搬运的元件：' .. owner
         )
     end
-    m.index = m.index + 1
     m.intent = nil
-    m.done = m.index > #m.ops
+    m.done = true
     self.save()
     return m.done
 end
@@ -4664,8 +4343,8 @@ function L:finish(owner)
     self.save()
 end
 
-function L:step(owner, route, reverse, sourceSlot, targetSlot, ioSink)
-    if not self:start(owner, route, reverse, sourceSlot, targetSlot, ioSink) then
+function L:step(owner, from, to, sourceSlot, targetSlot, ioSink)
+    if not self:start(owner, from, to, sourceSlot, targetSlot, ioSink) then
         return false
     end
     return self:tick(owner)
@@ -4758,31 +4437,14 @@ files[#files + 1] = {
     code = [=[
 -- Follow the lowest progress inside the reference window.
 local L = {}
-local function integer(n)
-    return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
-end
-
 function L.steps(raw)
     local result = {}
     for _, s in pairs(raw or {}) do
-        assert(
-            s.nanite
-                and integer(s.nanite.tier)
-                and s.nanite.tier >= 1
-                and s.nanite.tier <= 10
-                and integer(s.start)
-                and integer(s['end'])
-                and s['end'] > s.start,
-            '节点返回的配方步骤无效'
-        )
         result[#result + 1] = { tier = s.nanite.tier, start = s.start, finish = s['end'] }
     end
     table.sort(result, function(a, b)
         return a.start < b.start
     end)
-    for i, s in ipairs(result) do
-        assert(s.start == (i == 1 and 0 or result[i - 1].finish), '节点配方步骤不连续')
-    end
     assert(#result > 0, '没有读取到配方步骤')
     return result
 end
@@ -4847,7 +4509,6 @@ function R.check(cfg, state, U, proxy, M)
     local before, after = {}, {}
     for _, name in ipairs({
         'inventories',
-        'routes',
         'channels',
         'arrays',
         'beePools',
@@ -4865,14 +4526,6 @@ function R.check(cfg, state, U, proxy, M)
     local function inventory(id)
         same(before.inventories[id], after.inventories[id], '库存位置：' .. id)
     end
-    local function route(id)
-        local r = before.routes[id]
-        same(r, after.routes[id], '搬运路线：' .. id)
-        for _, step in ipairs(r.steps) do
-            inventory(step.from)
-            inventory(step.to)
-        end
-    end
     local function fields(a, b, keys, message)
         assert(b, '续做仍需保留' .. message)
         local names = {
@@ -4881,6 +4534,8 @@ function R.check(cfg, state, U, proxy, M)
             gateSide = '红石输出方向',
             diode = '麦克斯韦门',
             beePool = '共享蜂群池',
+            loadPort = '蜂群装载 ME-IO 端口',
+            unloadPort = '蜂群回收 ME-IO 端口',
         }
         for _, k in ipairs(keys) do
             same(a[k], b[k], message .. ' / ' .. names[k])
@@ -4900,7 +4555,7 @@ function R.check(cfg, state, U, proxy, M)
                     c,
                     after.channels[id],
                     { 'buffer', 'redstone', 'gateSide' },
-                    '尚有原料的接单通道：' .. id
+                    '尚有原料的公共原料子网：' .. id
                 )
             end
         end
@@ -4952,17 +4607,16 @@ function R.check(cfg, state, U, proxy, M)
                 local ab, bb = U.index(a.beeBoxes, 'box')[c.box], U.index(b.beeBoxes, 'box')[c.box]
                 same(ab, bb, '已借蜂群的箱子连接：' .. id .. ' / ' .. c.box)
                 inventory(ab.inventory)
-                route(ab.load)
-                route(ab.unload)
+                fields(a, b, { 'loadPort', 'unloadPort' }, '蜂群 ME-IO 端口')
+                inventory(a.loadPort)
+                inventory(a.unloadPort)
             end
         end
     end
     for _, move in pairs(state.moves or {}) do
         active = true
-        for _, op in ipairs(move.ops) do
-            inventory(op.from)
-            inventory(op.to)
-        end
+        inventory(move.from)
+        inventory(move.to)
     end
     local refill = state.refill or {}
     for id, s in pairs(refill.feeds or {}) do
@@ -4971,13 +4625,13 @@ function R.check(cfg, state, U, proxy, M)
             local a, b = before.feeds[id], after.feeds[id]
             assert(b, '补库尚未完成，请保留原料网：' .. id)
             if s.loading then
-                same(a.io, b.io, '补库 ME-IO 端口：' .. id)
+                same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)
             end
             for i, c in ipairs(a.cells) do
                 if (s.pending or {})[i] or s.loading and s.loading.index == i then
                     same(c, b.cells[i], '尚在补库的元件：' .. id .. ' / ' .. i)
-                    route(c.route)
+                    inventory(c.inventory)
                 end
             end
             for address, g in pairs(before.generators) do
@@ -5040,15 +4694,8 @@ function R.adopt(e, choose)
                 end
             end
             -- With no move record, an occupied port has no recoverable return address.
-            local ports = {}
-            for _, box in ipairs(a.beeBoxes) do
-                for _, route in ipairs({ box.load, box.unload }) do
-                    local _, id = e.log:ends(route)
-                    ports[id] = true
-                end
-            end
             if not s.bee and not e.s.moves['bee:' .. a.address] then
-                for id in pairs(ports) do
+                for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                     for slot = 1, e.log:size(id) do
                         assert(
                             not e.log:stack(id, slot),
@@ -5154,7 +4801,7 @@ end
 
 function R:cell(c, stack)
     local e = self.e
-    local source = e.log:ends(c.route)
+    local source = c.inventory
     stack = stack
         or assert(
             e.log:stack(source, c.slot),
@@ -5259,7 +4906,7 @@ function R:receive(f)
     local c = f.cells[task.index]
     local owner = 'refill:' .. f.id
     if task.phase == 'out' then
-        if e.log:step(owner, c.route, false, c.slot, 1, true) then
+        if e.log:step(owner, c.inventory, f.io, c.slot, 1, true) then
             task.phase = 'io'
             e.log:finish(owner)
         end
@@ -5271,7 +4918,7 @@ function R:receive(f)
             e.save()
         end
     elseif task.phase == 'back' then
-        if e.log:step(owner, c.route, true, 7, c.slot) then
+        if e.log:step(owner, f.io, c.inventory, 7, c.slot) then
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
@@ -5366,8 +5013,7 @@ function R:tick()
                         e.save()
                         break
                     else
-                        self.detail[f.id] =
-                            '剩余场强容量不足，无法补充整颗流体元件'
+                        self.detail[f.id] = '当前元件完全存入有超出场强上限风险'
                     end
                 end
             end
@@ -5451,7 +5097,7 @@ end
 function U.add(a, b, m)
     for k, v in pairs(b or {}) do
         a[k] = (a[k] or 0) + v * (m or 1)
-        assert(U.integer(a[k]), '数量超出精确整数范围：' .. k)
+        assert(a[k] <= 9007199254740991, '数量过大，OC 无法准确计数：' .. k)
     end
     return a
 end
@@ -5459,10 +5105,9 @@ end
 function U.total(a)
     local n = 0
     for _, v in pairs(a or {}) do
-        assert(U.integer(v), '数量不是精确的非负整数')
         n = n + v
     end
-    assert(U.integer(n), '总量超出精确整数范围')
+    assert(n <= 9007199254740991, '总量过大，OC 无法准确计数')
     return n
 end
 

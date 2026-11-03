@@ -1,4 +1,4 @@
--- Stopped-mode forms edit existing records; opening a page never rebuilds route IDs.
+-- Stopped-mode forms edit device bindings and settings.
 local F = {}
 F.__index = F
 local tabs = {
@@ -40,8 +40,7 @@ function F.new(ui, cfg, component, save)
         fluidPage = 1,
         fluidKey = 'low',
         extraBoxes = {},
-        expanded = {},
-        message = '修改记入草稿；按 S 校验并保存',
+        message = '修改会自动暂存；按 S 校验并保存',
         schema = {},
     }, F)
     for _, f in ipairs(ui.C.schema) do
@@ -76,7 +75,7 @@ function F:changed()
     if self.save.draft then
         self.save.draft(self.cfg)
     end
-    self.message = '修改已记入草稿；按 S 校验并保存后生效'
+    self.message = '修改已暂存；按 S 校验并保存后生效'
 end
 
 function F:record(section)
@@ -103,20 +102,9 @@ function F:inventory(id)
     return find(self.cfg.inventories, 'id', id)
 end
 
-function F:route(id)
-    return find(self.cfg.routes, 'id', id)
-end
-
 function F:removeUnusedInventory(id)
     if not id then
         return
-    end
-    for _, r in ipairs(self.cfg.routes) do
-        for _, s in ipairs(r.steps) do
-            if s.from == id or s.to == id then
-                return
-            end
-        end
     end
     for _, a in ipairs(self.cfg.arrays) do
         if a.loadPort == id or a.unloadPort == id then
@@ -132,6 +120,11 @@ function F:removeUnusedInventory(id)
         if f.io == id then
             return
         end
+        for _, c in ipairs(f.cells) do
+            if c.inventory == id then
+                return
+            end
+        end
     end
     local _, i = find(self.cfg.inventories, 'id', id)
     if i then
@@ -139,48 +132,7 @@ function F:removeUnusedInventory(id)
     end
 end
 
-function F:removeUnusedRoute(id)
-    local r, i = find(self.cfg.routes, 'id', id)
-    if not r then
-        return
-    end
-    for _, a in ipairs(self.cfg.arrays) do
-        for _, b in ipairs(a.beeBoxes) do
-            if b.load == id or b.unload == id then
-                return
-            end
-        end
-    end
-    for _, f in ipairs(self.cfg.feeds) do
-        for _, c in ipairs(f.cells) do
-            if c.route == id then
-                return
-            end
-        end
-    end
-    table.remove(self.cfg.routes, i)
-    for _, step in ipairs(r.steps) do
-        self:removeUnusedInventory(step.from)
-        self:removeUnusedInventory(step.to)
-    end
-end
-
 function F:position(inv, transposer, side)
-    -- Update matching access to the same container, while retaining other transposers' faces.
-    for _, r in ipairs(self.cfg.routes) do
-        for _, step in ipairs(r.steps) do
-            if step.transposer == inv.transposer then
-                if step.from == inv.id and step.fromSide == inv.side then
-                    step.transposer = transposer
-                    step.fromSide = side
-                end
-                if step.to == inv.id and step.toSide == inv.side then
-                    step.transposer = transposer
-                    step.toSide = side
-                end
-            end
-        end
-    end
     inv.transposer, inv.side = transposer, side
 end
 
@@ -190,35 +142,12 @@ function F:newInventory(prefix)
     return x
 end
 
-function F:newRoute(from, to, prefix)
-    local a, b = self:inventory(from), self:inventory(to)
-    local r = {
-        id = unique(self.cfg.routes, prefix .. '-'),
-        steps = {
-            {
-                from = from,
-                to = to,
-                transposer = b.transposer ~= '' and b.transposer or a.transposer,
-                fromSide = a.side,
-                toSide = b.side,
-                slot = 1,
-            },
-        },
-    }
-    self.cfg.routes[#self.cfg.routes + 1] = r
-    return r
-end
-
 function F:beePort(a, mode, create)
-    for _, b in ipairs(a.beeBoxes) do
-        local r = self:route(b[mode])
-        if r then
-            return self:inventory(r.steps[#r.steps].to)
-        end
-    end
     local x = self:inventory(a[mode .. 'Port'])
     if not x and create then
-        x = self:newInventory(mode == 'load' and '蜂群装载端口' or '蜂群回收端口')
+        x = self:newInventory(
+            mode == 'load' and '蜂群装载 ME-IO 端口' or '蜂群回收 ME-IO 端口'
+        )
         a[mode .. 'Port'] = x.id
     end
     return x
@@ -234,13 +163,8 @@ function F:beeBox(a, number, create)
         end
         b = { box = number, inventory = inv.id }
         a.beeBoxes[#a.beeBoxes + 1] = b
-        for _, mode in ipairs({ 'load', 'unload' }) do
-            b[mode] = self:newRoute(
-                b.inventory,
-                self:beePort(a, mode, true).id,
-                mode == 'load' and '蜂群装载' or '蜂群回收'
-            ).id
-        end
+        self:beePort(a, 'load', true)
+        self:beePort(a, 'unload', true)
     end
     return b
 end
@@ -270,7 +194,7 @@ function F:feedPort(feed, create)
     end
     local inv = self:inventory(feed.io)
     if not inv and create then
-        inv = self:newInventory('预缓存端口')
+        inv = self:newInventory('主网流体转运 ME-IO 端口')
         feed.io = inv.id
     end
     return inv
@@ -302,16 +226,10 @@ function F:placeFeedCell(feed, cell)
     local drive, slot = self:fluidPosition(cell.material)
     local port = self:feedPort(feed, true)
     local side = feed['drive' .. drive .. 'Side']
-    local r = self:route(cell.route)
-    local step = r and r.steps[1]
-    local old = step and step.from
+    local old = cell.inventory
     local inv = self:at(port.transposer, side) or self:newInventory('流体驱动器')
     inv.transposer, inv.side = port.transposer, side
-    if step then
-        step.from, step.fromSide, step.transposer = inv.id, side, port.transposer
-    else
-        cell.route = self:newRoute(inv.id, port.id, '预缓存搬运').id
-    end
+    cell.inventory = inv.id
     cell.slot = slot
     self:removeUnusedInventory(old)
 end
@@ -324,7 +242,7 @@ function F:feedCell(feed, material, enabled)
         feed.cells[#feed.cells + 1] = cell
     elseif not enabled and cell then
         table.remove(feed.cells, i)
-        self:removeUnusedRoute(cell.route)
+        self:removeUnusedInventory(cell.inventory)
     end
     return cell
 end
@@ -431,87 +349,6 @@ function F:form(fluidIndex)
             hi = hi or 9007199254740991,
         })
     end
-    local function endpoint(label, get)
-        virtual(label .. '转运器', 'choice', function()
-            local v = get()
-            return v and v.transposer or ''
-        end, function(v)
-            local inv = get(true)
-            self:position(inv, v, inv.side)
-        end, 'device:transposer')
-        virtual(label .. '方向', 'side', function()
-            local v = get()
-            return v and v.side or 0
-        end, function(v)
-            local inv = get(true)
-            self:position(inv, inv.transposer, v)
-        end)
-    end
-    local function routeRows(get, label)
-        local r = get()
-        local count = r and #r.steps or 1
-        for i = 1, count do
-            if count > 1 then
-                title(label .. ' / 第 ' .. i .. ' 步')
-            end
-            for _, spec in ipairs({
-                { '转运器', 'transposer', 'choice', 'device:transposer' },
-                { '来源方向', 'fromSide', 'side' },
-                { '目标方向', 'toSide', 'side' },
-            }) do
-                local key = spec[2]
-                local name = spec[1]
-                virtual(name, spec[3], function()
-                    local rr = get()
-                    return rr and rr.steps[i][key] or (key == 'transposer' and '' or 0)
-                end, function(v)
-                    local rr = get(true)
-                    local step = rr.steps[i]
-                    local inv = self:inventory(step.to)
-                    local readHere = inv.transposer == step.transposer and inv.side == step.toSide
-                    step[key] = v
-                    if
-                        (i == #rr.steps or readHere) and (key == 'transposer' or key == 'toSide')
-                    then
-                        self:position(inv, step.transposer, step.toSide)
-                    end
-                end, spec[4])
-            end
-            if i < count then
-                field('中转槽位', r.steps[i], 'slot', 'number', nil, 1, 2147483647).inventory = function()
-                    return self:inventory(r.steps[i].to)
-                end
-            end
-        end
-        action('增加中转步骤', function()
-            local rr = get(true)
-            local last = rr.steps[#rr.steps]
-            local mid = self:newInventory('中转容器')
-            mid.transposer, mid.side = last.transposer, last.toSide
-            local to = last.to
-            last.to = mid.id
-            rr.steps[#rr.steps + 1] = {
-                from = mid.id,
-                to = to,
-                transposer = last.transposer,
-                fromSide = last.toSide,
-                toSide = 0,
-                slot = 1,
-            }
-        end)
-        if count > 1 then
-            action('移除最后中转步骤', function()
-                local rr = get()
-                local last = table.remove(rr.steps)
-                local prev = rr.steps[#rr.steps]
-                local mid = prev.to
-                local target = self:inventory(last.to)
-                prev.to = last.to
-                prev.toSide = target.transposer == prev.transposer and target.side or last.toSide
-                self:removeUnusedInventory(mid)
-            end)
-        end
-    end
     if o.kind == 'field' then
         field('约束场设备', x, 'storage', 'choice', 'device:bec_storage')
         field('约束场强度 L', x, 'fieldLimit', 'number', nil, 1)
@@ -563,11 +400,6 @@ function F:form(fluidIndex)
                     end
                 end
             )
-        end
-        if #self.cfg.feeds > 1 then
-            for _, g in ipairs(self.cfg.generators) do
-                field(g.address:sub(1, 12) .. ' 使用供料组', g, 'feed', 'choice', 'feeds')
-            end
         end
     elseif o.kind == 'pool' then
         field('蜂群池名称', x, 'name', 'text')
@@ -621,23 +453,12 @@ function F:form(fluidIndex)
                 for _, box in ipairs(self:boxes(pool)) do
                     local b = self:beeBox(x, box, true)
                     self:inventory(b.inventory).transposer = v
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        local r = self:route(b[mode])
-                        if #r.steps == 1 then
-                            r.steps[1].transposer = v
-                        end
-                    end
                 end
             end, 'device:transposer')
             for _, spec in ipairs({ { 'load', '装载' }, { 'unload', '回收' } }) do
                 local mode = spec[1]
                 virtual(spec[2] .. ' ME-IO 端口方向', 'side', common(mode, 'side'), function(v)
                     self:beePort(x, mode, true).side = v
-                    for _, box in ipairs(self:boxes(pool)) do
-                        local b = self:beeBox(x, box, true)
-                        local r = self:route(b[mode])
-                        r.steps[#r.steps].toSide = v
-                    end
                 end)
             end
             local boxes = self:boxes(pool)
@@ -655,8 +476,6 @@ function F:form(fluidIndex)
                     action('移除未登记的箱子 ' .. box .. ' 连接', function()
                         local b, i = find(x.beeBoxes, 'box', box)
                         table.remove(x.beeBoxes, i)
-                        self:removeUnusedRoute(b.load)
-                        self:removeUnusedRoute(b.unload)
                         self:removeUnusedInventory(b.inventory)
                     end)
                 end
@@ -667,33 +486,7 @@ function F:form(fluidIndex)
                 end, function(v)
                     local b = self:beeBox(x, box, true)
                     self:inventory(b.inventory).side = v
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        self:route(b[mode]).steps[1].fromSide = v
-                    end
                 end)
-                local key = x.address .. ':box:' .. box
-                action(
-                    (self.expanded[key] and '收起' or '展开')
-                        .. '箱子 '
-                        .. box
-                        .. ' 多转运器设置',
-                    function()
-                        self.expanded[key] = not self.expanded[key]
-                    end
-                )
-                if self.expanded[key] then
-                    endpoint('箱子 ' .. box .. ' 读取', function(create)
-                        local b = self:beeBox(x, box, create)
-                        return b and self:inventory(b.inventory)
-                    end)
-                    for _, mode in ipairs({ 'load', 'unload' }) do
-                        title(mode == 'load' and '装载搬运' or '回收搬运')
-                        routeRows(function(create)
-                            local b = self:beeBox(x, box, create)
-                            return b and self:route(b[mode])
-                        end, '蜂群搬运')
-                    end
-                end
             end
         end
     elseif o.kind == 'channel' then
@@ -717,16 +510,10 @@ function F:form(fluidIndex)
             local p = self:feedPort(x, true)
             self:position(p, v, p.side)
             for _, cell in ipairs(x.cells) do
-                local r = self:route(cell.route)
-                if #r.steps == 1 then
-                    local step = r.steps[1]
-                    step.transposer = v
-                    local inv = self:inventory(step.from)
-                    inv.transposer = v
-                end
+                self:inventory(cell.inventory).transposer = v
             end
         end, 'device:transposer')
-        virtual('主网补库 ME-IO 端口方向', 'side', function()
+        virtual('主网流体转运 ME-IO 端口方向', 'side', function()
             local p = self:feedPort(x)
             return p and p.side or 0
         end, function(v)
@@ -939,24 +726,8 @@ function F:commit()
 end
 
 function F:activate(f, button)
-    if button ~= nil and (f.kind == 'side' or f.inventory) then
-        local lo, hi = 0, 5
-        if f.inventory then
-            local inv = f.inventory()
-            if not inv or inv.transposer == '' then
-                self.message = '请先选择转运器和容器方向'
-                return
-            end
-            local ok, size = pcall(function()
-                return self.component.proxy(inv.transposer).getInventorySize(inv.side)
-            end)
-            if not ok or not size or size < 1 then
-                self.message = '所选方向未读取到容器，请检查转运器和方向'
-                return
-            end
-            lo, hi = 1, size
-        end
-        f.set(lo + ((f.get() or lo) - lo + (button == 1 and -1 or 1)) % (hi - lo + 1))
+    if button ~= nil and f.kind == 'side' then
+        f.set((f.get() + (button == 1 and -1 or 1)) % 6)
         self:changed()
     elseif f.kind == 'action' then
         f.run()
@@ -1631,8 +1402,7 @@ function F:draw()
         ui:put(
             x,
             b.status,
-            o and o.kind == 'feed' and '方向：左键下一项，右键上一项；首尾循环'
-                or '方向/槽位：左键下一项，右键上一项；首尾循环',
+            '方向：左键下一项，右键上一项；首尾循环',
             width,
             ink.dim
         )
@@ -1642,7 +1412,7 @@ function F:draw()
     ui:control('refresh', x + 24, b.nav, 'F 刷新')
     ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
     ui:control('save', 2, h, 'S 保存并返回')
-    ui:control('quit', 22, h, 'Q 返回 / 保留草稿')
+    ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
     ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end

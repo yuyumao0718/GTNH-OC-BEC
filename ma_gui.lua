@@ -196,7 +196,6 @@ function G:recordName(cfg, section, value)
                 channels = '接收子网',
                 feeds = '供料组',
                 inventories = '库存位置',
-                routes = '搬运路线',
             }
             return (names[section] or '配置') .. ' ' .. i
         end
@@ -368,7 +367,7 @@ function G:runtime(e, refill)
     )
     self:bar(2, 5, w - 12, total / e.cfg.fieldLimit)
     self:put(w - 9, 5, string.format('%.1f%%', 100 * total / e.cfg.fieldLimit), 8, ink.dim)
-    for i, label in ipairs({ '1 库存', '2 阵列', '3 通道' }) do
+    for i, label in ipairs({ '1 库存', '2 阵列', '3 AE下单' }) do
         self:button('tab:' .. i, 2 + (i - 1) * 12, 7, label, self.tab == i)
     end
     self:put(40, 7, '~ 为约数', w - 41, ink.dim)
@@ -423,7 +422,7 @@ function G:runtime(e, refill)
         9,
         self.tab == 1 and '凝聚态简称 / L'
             or self.tab == 2 and '观测阵列 / 当前批次'
-            or '通道 / 状态',
+            or 'AE下单 / 状态',
         left,
         ink.dim
     )

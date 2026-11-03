@@ -39,18 +39,7 @@ C.schema = {
         dev('transposer', '读取库存的转运器', 'transposer'),
         side('side', '库存方向'),
     }),
-    list('routes', '元件搬运路线', {
-        idField(),
-        list('steps', '顺序步骤', {
-            dev('transposer', '搬运用转运器', 'transposer'),
-            ref('from', '来源库存', 'inventories'),
-            side('fromSide', '来源方向'),
-            ref('to', '目标库存', 'inventories'),
-            side('toSide', '目标方向'),
-            num('slot', '中转目标槽（末步忽略）', 1, 1),
-        }),
-    }),
-    list('channels', 'AE 接单通道', {
+    list('channels', 'AE下单', {
         idField(),
         list(
             'patterns',
@@ -75,11 +64,11 @@ C.schema = {
         dev('diode', '麦克斯韦门', 'bec_diode'),
         list('nodes', '关联的传送节点', { dev('address', '节点', 'bec_io_node') }),
         ref('beePool', '使用的蜂群池', 'beePools'),
+        ref('loadPort', '蜂群装载 ME-IO 端口', 'inventories'),
+        ref('unloadPort', '蜂群回收 ME-IO 端口', 'inventories'),
         list('beeBoxes', '蜂群箱连接', {
             num('box', '箱子编号', 1, 1),
             ref('inventory', '蜂群箱库存位置', 'inventories'),
-            ref('load', '装载路线', 'routes'),
-            ref('unload', '回收路线', 'routes'),
         }),
     }),
     list('generators', '纠缠装置', {
@@ -88,13 +77,13 @@ C.schema = {
     }),
     list('feeds', '纠缠装置供料组', {
         idField(),
-        ref('io', '主网补库 ME-IO 端口', 'inventories'),
+        ref('io', '主网流体转运 ME-IO 端口', 'inventories'),
         num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
         num('drive2Side', '第二台流体驱动器方向', 2, 0, 5),
         list('cells', '分区流体元件', {
             ref('material', '流体', 'materials'),
             num('slot', '驱动器槽位', 1, 1),
-            ref('route', '补库元件搬运路线', 'routes'),
+            ref('inventory', '流体驱动器', 'inventories'),
         }),
     }),
     list('bands', '共享流体目标', {
@@ -274,8 +263,8 @@ function C.validate(cfg, component, U)
         #checked.arrays > 0 and #cfg.channels == 1,
         '至少启用一台阵列，并配置唯一的公共原料子网'
     )
-    local inv, routes, feeds = U.index(cfg.inventories), U.index(cfg.routes), U.index(cfg.feeds)
-    for _, section in ipairs({ 'inventories', 'routes', 'channels', 'feeds', 'beePools' }) do
+    local inv, feeds = U.index(cfg.inventories), U.index(cfg.feeds)
+    for _, section in ipairs({ 'inventories', 'channels', 'feeds', 'beePools' }) do
         local seen = {}
         for _, x in ipairs(cfg[section]) do
             assert(not seen[x.id], '重复名称：' .. x.id)
@@ -293,22 +282,14 @@ function C.validate(cfg, component, U)
         assert(not owners[key], '元件槽位重复：' .. key)
         owners[key] = true
     end
-    for _, r in ipairs(cfg.routes) do
-        assert(#r.steps > 0, '路线没有步骤：' .. r.id)
-        for i, s in ipairs(r.steps) do
-            assert(
-                inv[s.from] and inv[s.to] and s.from ~= s.to,
-                '路线的起点或终点无效：' .. r.id
-            )
-            assert(s.fromSide ~= s.toSide, '来源和目标方向相同：' .. r.id)
-            assert(
-                i == 1 or r.steps[i - 1].to == s.from,
-                '路线不连通：上一步终点与下一步起点不同：' .. r.id
-            )
-        end
-    end
-    local function route(id)
-        return assert(routes[id], '未知路线：' .. tostring(id))
+    local function connected(from, to)
+        local a, b = inv[from], inv[to]
+        assert(a and b, '请配置元件容器和 ME-IO 端口')
+        assert(
+            a.transposer == b.transposer,
+            '元件容器和 ME-IO 端口须连接同一个转运器'
+        )
+        assert(a.side ~= b.side, '元件容器和 ME-IO 端口不能使用同一方向')
     end
     local pools = U.index(cfg.beePools)
     local boxPools = {}
@@ -323,7 +304,7 @@ function C.validate(cfg, component, U)
     end
     local patterns = {}
     for _, c in ipairs(cfg.channels) do
-        assert(#c.patterns > 0, '接单通道至少选择一个主网样板接口')
+        assert(#c.patterns > 0, 'AE下单至少选择一个主网样板接口')
         for _, p in ipairs(c.patterns) do
             assert(not patterns[p.address], '样板接口重复分配：' .. p.address)
             patterns[p.address] = true
@@ -340,7 +321,10 @@ function C.validate(cfg, component, U)
             nodes[n.address] = true
         end
         local pool = assert(pools[a.beePool], '请选择使用的蜂群池：' .. a.address)
-        local boxes, ends = {}, {}
+        local boxes = {}
+        port(a.loadPort)
+        port(a.unloadPort)
+        connected(a.loadPort, a.unloadPort)
         for _, box in ipairs(a.beeBoxes) do
             assert(
                 not boxes[box.box],
@@ -364,23 +348,8 @@ function C.validate(cfg, component, U)
             end
             assert(used, '蜂群池中没有登记该箱子的元件：' .. key)
             boxPools[box.inventory] = key
-            for _, mode in ipairs({ 'load', 'unload' }) do
-                local r = route(box[mode])
-                assert(
-                    r.steps[1].from == box.inventory,
-                    '蜂群路线必须从对应的蜂群箱开始'
-                )
-                local target = r.steps[#r.steps].to
-                if ends[mode] then
-                    assert(
-                        ends[mode] == target,
-                        '同一阵列的蜂群箱须共用装载端口和回收端口'
-                    )
-                else
-                    port(target)
-                    ends[mode] = target
-                end
-            end
+            connected(box.inventory, a.loadPort)
+            connected(box.inventory, a.unloadPort)
         end
         for _, c in ipairs(pool.cells) do
             assert(
@@ -421,12 +390,8 @@ function C.validate(cfg, component, U)
                 '原料网的流体重复配置，或未设置补库目标'
             )
             seen[c.material] = true
-            local r = route(c.route)
-            assert(
-                r.steps[#r.steps].to == f.io,
-                '补库路线的终点必须是所选的 ME-IO 端口'
-            )
-            own(r.steps[1].from, c.slot)
+            connected(c.inventory, f.io)
+            own(c.inventory, c.slot)
         end
     end
     if component then

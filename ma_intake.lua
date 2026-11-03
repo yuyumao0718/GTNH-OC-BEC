@@ -1,16 +1,11 @@
 -- Solid-only AE orders. Replenishment has its own isolated fluid network.
 -- No machine may consume from the receiver until its admission gate has closed.
 local I = {}
-local function integer(n)
-    return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
-end
-
 function I.key(s)
-    assert(type(s) == 'table' and type(s.name) == 'string', '物品描述缺少注册名')
     local tag = ''
     if s.hasTag then
         assert(
-            type(s.tag) == 'string',
+            s.tag,
             '无法读取物品 NBT 数据，请启用 OC 的物品 NBT 访问或使用无标签原料'
         )
         tag = s.tag
@@ -19,9 +14,7 @@ function I.key(s)
 end
 
 function I.amount(s, fluid)
-    local n = fluid and (s.amount or s.size) or s.size
-    assert(integer(n), '物品或流体数量不是精确的非负整数')
-    return n
+    return fluid and (s.amount or s.size) or s.size
 end
 
 function I.inventory(items)
@@ -31,7 +24,7 @@ function I.inventory(items)
         if n > 0 then
             local key = I.key(s)
             counts[key] = (counts[key] or 0) + n
-            assert(integer(counts[key]), '库存数量超出精确数值范围')
+            assert(counts[key] <= 9007199254740991, '库存数量过大，OC 无法准确计数')
         end
     end
     return counts
@@ -76,10 +69,6 @@ function I.catalog(patterns)
     local result = { patterns = {} }
     for slot, p in pairs(patterns) do
         assert(p.isCraftable == false, '请将槽位 ' .. slot .. ' 中的样板设为处理样板')
-        assert(
-            type(p.inputs) == 'table' and type(p.outputs) == 'table',
-            '无法读取槽位 ' .. slot .. ' 中的样板输入和输出'
-        )
         local entry = { slot = slot, inputs = {}, outputs = {} }
         for _, s in pairs(p.inputs) do
             if s.name then
@@ -176,11 +165,13 @@ function I.receipts(pattern, counts)
     end
     for key, need in pairs(pattern.inputs) do
         local n = counts[key] or 0
-        assert(integer(n), '已接订单的原料数量无效')
         admitted = math.max(admitted, math.ceil(n / need))
         complete = math.min(complete, math.floor(n / need))
     end
-    assert(admitted >= 1 and admitted <= 2147483647, '已接收配方份数超出范围')
+    assert(
+        admitted >= 1 and admitted <= 2147483647,
+        '一单最多支持 2147483647 份配方，请分单下单'
+    )
     assert(
         complete >= admitted - 1,
         '多份配方原料未到齐，接收库存可能被提前抽取或发生混料'

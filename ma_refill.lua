@@ -28,7 +28,7 @@ end
 
 function R:cell(c, stack)
     local e = self.e
-    local source = e.log:ends(c.route)
+    local source = c.inventory
     stack = stack
         or assert(
             e.log:stack(source, c.slot),
@@ -133,7 +133,7 @@ function R:receive(f)
     local c = f.cells[task.index]
     local owner = 'refill:' .. f.id
     if task.phase == 'out' then
-        if e.log:step(owner, c.route, false, c.slot, 1, true) then
+        if e.log:step(owner, c.inventory, f.io, c.slot, 1, true) then
             task.phase = 'io'
             e.log:finish(owner)
         end
@@ -145,7 +145,7 @@ function R:receive(f)
             e.save()
         end
     elseif task.phase == 'back' then
-        if e.log:step(owner, c.route, true, 7, c.slot) then
+        if e.log:step(owner, f.io, c.inventory, 7, c.slot) then
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
@@ -240,8 +240,7 @@ function R:tick()
                         e.save()
                         break
                     else
-                        self.detail[f.id] =
-                            '剩余场强容量不足，无法补充整颗流体元件'
+                        self.detail[f.id] = '当前元件完全存入有超出场强上限风险'
                     end
                 end
             end

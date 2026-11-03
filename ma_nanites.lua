@@ -1,30 +1,13 @@
 -- Follow the lowest progress inside the reference window.
 local L = {}
-local function integer(n)
-    return type(n) == 'number' and n >= 0 and n <= 9007199254740991 and n == math.floor(n)
-end
-
 function L.steps(raw)
     local result = {}
     for _, s in pairs(raw or {}) do
-        assert(
-            s.nanite
-                and integer(s.nanite.tier)
-                and s.nanite.tier >= 1
-                and s.nanite.tier <= 10
-                and integer(s.start)
-                and integer(s['end'])
-                and s['end'] > s.start,
-            '节点返回的配方步骤无效'
-        )
         result[#result + 1] = { tier = s.nanite.tier, start = s.start, finish = s['end'] }
     end
     table.sort(result, function(a, b)
         return a.start < b.start
     end)
-    for i, s in ipairs(result) do
-        assert(s.start == (i == 1 and 0 or result[i - 1].finish), '节点配方步骤不连续')
-    end
     assert(#result > 0, '没有读取到配方步骤')
     return result
 end

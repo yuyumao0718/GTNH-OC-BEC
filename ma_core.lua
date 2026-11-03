@@ -117,11 +117,8 @@ function E:check()
     self:catalogsRead()
     local needed = 0
     for _, a in ipairs(self.arrays) do
-        for _, box in ipairs(a.beeBoxes) do
-            for _, r in ipairs({ box.load, box.unload }) do
-                local _, id = self.log:ends(r)
-                assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
-            end
+        for _, id in ipairs({ a.loadPort, a.unloadPort }) do
+            assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
         end
         local s = self.s.arrays[a.address]
         local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
@@ -808,13 +805,12 @@ function E:bees(a, s, want)
     local b = s.bee
     local cell = s.lease[b.tier]
     local box = self:beeAccess(a, cell)
-    local route = b.loading and box.load or box.unload
-    local _, port = self.log:ends(route)
+    local port = b.loading and a.loadPort or a.unloadPort
     local slot = cell.slot
     local owner = 'bee:' .. a.address
     self.status[a.address] = (b.loading and '装载 T' or '回收 T') .. b.tier .. ' 蜂群'
     if b.phase == 'out' then
-        if self.log:step(owner, route, false, slot, 1, true) then
+        if self.log:step(owner, box.inventory, port, slot, 1, true) then
             b.phase = 'io'
             self.log:finish(owner)
         end
@@ -824,7 +820,7 @@ function E:bees(a, s, want)
             self.save()
         end
     elseif b.phase == 'back' then
-        if self.log:step(owner, route, true, 7, slot) then
+        if self.log:step(owner, port, box.inventory, 7, slot) then
             b.phase = 'sync'
             self.log:finish(owner)
         end

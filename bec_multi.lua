@@ -99,8 +99,6 @@ local ok, err = xpcall(function()
                 '检查通过：'
                     .. #engine.arrays
                     .. ' 台阵列，'
-                    .. #cfg.channels
-                    .. ' 条接单通道，'
                     .. #cfg.generators
                     .. ' 台纠缠装置。'
             )

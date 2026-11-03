@@ -7,7 +7,6 @@ function R.check(cfg, state, U, proxy, M)
     local before, after = {}, {}
     for _, name in ipairs({
         'inventories',
-        'routes',
         'channels',
         'arrays',
         'beePools',
@@ -25,14 +24,6 @@ function R.check(cfg, state, U, proxy, M)
     local function inventory(id)
         same(before.inventories[id], after.inventories[id], '库存位置：' .. id)
     end
-    local function route(id)
-        local r = before.routes[id]
-        same(r, after.routes[id], '搬运路线：' .. id)
-        for _, step in ipairs(r.steps) do
-            inventory(step.from)
-            inventory(step.to)
-        end
-    end
     local function fields(a, b, keys, message)
         assert(b, '续做仍需保留' .. message)
         local names = {
@@ -41,6 +32,8 @@ function R.check(cfg, state, U, proxy, M)
             gateSide = '红石输出方向',
             diode = '麦克斯韦门',
             beePool = '共享蜂群池',
+            loadPort = '蜂群装载 ME-IO 端口',
+            unloadPort = '蜂群回收 ME-IO 端口',
         }
         for _, k in ipairs(keys) do
             same(a[k], b[k], message .. ' / ' .. names[k])
@@ -60,7 +53,7 @@ function R.check(cfg, state, U, proxy, M)
                     c,
                     after.channels[id],
                     { 'buffer', 'redstone', 'gateSide' },
-                    '尚有原料的接单通道：' .. id
+                    '尚有原料的公共原料子网：' .. id
                 )
             end
         end
@@ -112,17 +105,16 @@ function R.check(cfg, state, U, proxy, M)
                 local ab, bb = U.index(a.beeBoxes, 'box')[c.box], U.index(b.beeBoxes, 'box')[c.box]
                 same(ab, bb, '已借蜂群的箱子连接：' .. id .. ' / ' .. c.box)
                 inventory(ab.inventory)
-                route(ab.load)
-                route(ab.unload)
+                fields(a, b, { 'loadPort', 'unloadPort' }, '蜂群 ME-IO 端口')
+                inventory(a.loadPort)
+                inventory(a.unloadPort)
             end
         end
     end
     for _, move in pairs(state.moves or {}) do
         active = true
-        for _, op in ipairs(move.ops) do
-            inventory(op.from)
-            inventory(op.to)
-        end
+        inventory(move.from)
+        inventory(move.to)
     end
     local refill = state.refill or {}
     for id, s in pairs(refill.feeds or {}) do
@@ -131,13 +123,13 @@ function R.check(cfg, state, U, proxy, M)
             local a, b = before.feeds[id], after.feeds[id]
             assert(b, '补库尚未完成，请保留原料网：' .. id)
             if s.loading then
-                same(a.io, b.io, '补库 ME-IO 端口：' .. id)
+                same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)
             end
             for i, c in ipairs(a.cells) do
                 if (s.pending or {})[i] or s.loading and s.loading.index == i then
                     same(c, b.cells[i], '尚在补库的元件：' .. id .. ' / ' .. i)
-                    route(c.route)
+                    inventory(c.inventory)
                 end
             end
             for address, g in pairs(before.generators) do
@@ -200,15 +192,8 @@ function R.adopt(e, choose)
                 end
             end
             -- With no move record, an occupied port has no recoverable return address.
-            local ports = {}
-            for _, box in ipairs(a.beeBoxes) do
-                for _, route in ipairs({ box.load, box.unload }) do
-                    local _, id = e.log:ends(route)
-                    ports[id] = true
-                end
-            end
             if not s.bee and not e.s.moves['bee:' .. a.address] then
-                for id in pairs(ports) do
+                for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                     for slot = 1, e.log:size(id) do
                         assert(
                             not e.log:stack(id, slot),

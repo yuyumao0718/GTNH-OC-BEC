@@ -40,7 +40,7 @@ end
 function U.add(a, b, m)
     for k, v in pairs(b or {}) do
         a[k] = (a[k] or 0) + v * (m or 1)
-        assert(U.integer(a[k]), '数量超出精确整数范围：' .. k)
+        assert(a[k] <= 9007199254740991, '数量过大，OC 无法准确计数：' .. k)
     end
     return a
 end
@@ -48,10 +48,9 @@ end
 function U.total(a)
     local n = 0
     for _, v in pairs(a or {}) do
-        assert(U.integer(v), '数量不是精确的非负整数')
         n = n + v
     end
-    assert(U.integer(n), '总量超出精确整数范围')
+    assert(n <= 9007199254740991, '总量过大，OC 无法准确计数')
     return n
 end
 
