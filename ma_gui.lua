@@ -255,9 +255,6 @@ local phases = {
 }
 
 local function phase(b, s)
-    if b.phase == 'collect' then
-        return '收集算力奇点 ' .. #b.workers .. '/15 种'
-    end
     if s and s.bee then
         return (s.bee.loading and '装载 T' or '回收 T') .. s.bee.tier .. ' 蜂群'
     end

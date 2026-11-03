@@ -499,7 +499,7 @@ function E:collections()
             local c = b.collection
             c.elapsed = c.elapsed + math.max(0, self.now - (self.collectAt[a.address] or self.now))
             self.collectAt[a.address] = self.now
-            if self.stopping or #b.workers == 15 or c.elapsed >= self.cfg.singularityWait then
+            if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
                 self.collectAt[a.address] = nil
                 self.save()
@@ -510,65 +510,48 @@ function E:collections()
     end
 end
 
-function E:collectOrder(order, kind, idle)
+function E:collectOrder(order, idle)
     local selected
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
         if b and b.phase == 'collect' and not self.errors[a.address] then
-            if b.collection.types[kind] then
-                self.status[self.cfg.channels[1].id] =
-                    '等待当前算力奇点收集批次结束（本种类已收到）'
-                return
-            end
             selected = a
             break
         end
     end
+    selected = selected or idle[1]
     if not selected then
-        for _, a in ipairs(idle) do
-            if #a.nodes >= 15 then
-                selected = a
-                break
-            end
-        end
-    end
-    if not selected then
-        self.status[self.cfg.channels[1].id] =
-            '等待至少关联 15 个节点的空闲阵列制作算力奇点'
+        self.status[self.cfg.channels[1].id] = '等待空闲阵列接收剩余算力奇点原料'
         return
     end
     local s = self.s.arrays[selected.address]
-    local b = s.batch
-        or { key = order.key, count = 0, workers = {}, collection = { types = {}, elapsed = 0 } }
+    local b = s.batch or { key = order.key, count = 0, workers = {}, collection = { elapsed = 0 } }
     local used = {}
     for _, w in ipairs(b.workers) do
         used[w.address] = true
     end
-    local node
+    local previous = b.count
+    local assigned = 0
     for _, n in ipairs(selected.nodes) do
-        if not used[n.address] then
-            node = n
-            break
+        if not used[n.address] and assigned < order.count then
+            b.workers[#b.workers + 1] = { address = n.address, key = order.key, count = 1 }
+            assigned = assigned + 1
         end
     end
-    if not node then
-        self.status[self.cfg.channels[1].id] =
-            '等待算力奇点收集批次结束（没有空闲节点）'
-        return
-    end
-    b.workers[#b.workers + 1] = { address = node.address, key = order.key, count = order.count }
-    b.count = b.count + order.count
-    b.collection.types[kind] = true
+    b.count = b.count + assigned
     b.phase = 'admit'
     b.admitting = true
     s.batch = b
     s.blocked = nil
     self.s.admission = {
-        count = order.count,
+        count = assigned,
         members = { selected.address },
-        node = node.address,
+        previous = previous,
     }
-    self.s.queue = {}
+    order.count = order.count - assigned
+    if order.count == 0 then
+        self.s.queue = {}
+    end
     self.finishWait = nil
     self.save()
 end
@@ -604,7 +587,7 @@ function E:schedule()
         end
     end
     if meta.pattern.singularity then
-        self:collectOrder(order, meta.pattern.singularity, idle)
+        self:collectOrder(order, idle)
         return
     end
     if #idle == 0 then
@@ -670,19 +653,17 @@ function E:admissionTick()
         if self.errors[id] or b.phase ~= 'wait' then
             return
         end
-        if admission.node then
-            for _, w in ipairs(b.workers) do
-                if w.address == admission.node then
-                    count = count + w.count
-                end
-            end
-        else
-            count = count + b.count
-        end
+        count = count + b.count
     end
+    count = count - (admission.previous or 0)
+    local queued = self.s.queue[1]
+    local remaining = queued
+            and self.U.scale(self.s.patterns[queued.key].pattern.inputs, queued.count)
+        or {}
     assert(
-        count == admission.count and not next(self:items(self.cfg.channels[1].buffer)),
-        '节点取料与订单不一致，公共原料子网仍有原料；请核对节点的实际并行能力后续做'
+        count == admission.count
+            and self.U.equal(self:items(self.cfg.channels[1].buffer), remaining),
+        '节点取料或公共原料子网余量与订单不一致；请核对实际原料和节点并行能力后续做'
     )
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
@@ -690,7 +671,7 @@ function E:admissionTick()
         if b.collection then
             b.collection.elapsed = 0
             self.collectAt[id] = self.now
-            if #b.workers < 15 and not self.stopping then
+            if #b.workers < #self.byAddress[id].nodes and not self.stopping then
                 b.phase = 'collect'
             end
         end
@@ -983,8 +964,9 @@ function E:array(a)
         end
     elseif b.phase == 'collect' then
         self.status[a.address] = string.format(
-            '算力奇点已收 %d/15 种；等待新种类，超时剩余 %.0f 秒',
+            '算力奇点占用 %d/%d 节点；等待下单，超时剩余 %.0f 秒',
             #b.workers,
+            #a.nodes,
             math.ceil(math.max(0, self.cfg.singularityWait - b.collection.elapsed))
         )
     elseif b.phase == 'wait' then
