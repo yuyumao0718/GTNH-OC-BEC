@@ -73,9 +73,12 @@ function R:observe(f)
     local s = self.s.feeds[f.id]
     for i, c in ipairs(f.cells) do
         if not s.loading or s.loading.index ~= i then
-            local amount, capacity = self:cell(c)
             local m = self.materials[c.material]
             local pending = s.pending[i]
+            local amount, capacity
+            if not s.initialized or pending and not pending.finish then
+                amount, capacity = self:cell(c)
+            end
             -- A machine can start between the earlier machine sample and this cell read.
             if not s.initialized or pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
@@ -115,7 +118,7 @@ function R:observe(f)
                         end
                     end
                 end
-            elseif amount >= m.unit then
+            elseif amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
             end
         end
@@ -158,6 +161,17 @@ function R:receive(f)
 end
 
 function R:tick()
+    if self.e.now < (self.scanAt or -math.huge) then
+        for _, f in ipairs(self.e.cfg.feeds) do
+            self:receive(f)
+        end
+        return
+    end
+    self:scan()
+    self.scanAt = self.e.io.time() + 1
+end
+
+function R:scan()
     local e = self.e
     self:generators()
     for _, f in ipairs(e.cfg.feeds) do

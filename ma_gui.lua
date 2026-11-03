@@ -112,6 +112,17 @@ function G:hit(x, y)
     end
 end
 
+function G:discardInput()
+    local interrupted = false
+    while true do
+        local name = self.event.pull(0)
+        if not name then
+            return interrupted
+        end
+        interrupted = interrupted or name == 'interrupted'
+    end
+end
+
 function G:bar(x, y, width, ratio, color)
     self:put(x, y, string.rep('━', width), width, ink.panel)
     self:put(

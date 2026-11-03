@@ -152,35 +152,52 @@ local ok, err = xpcall(function()
         state.wiring = U.copy(cfg)
         engine.save()
         local refill = Refill.new(engine)
-        local lastDraw, lastSave = -math.huge, computer.uptime()
+        local lastDraw
+        local lastSave = computer.uptime()
         local editing = false
         local stopping = false
-        while true do
-            engine:tick()
-            if engine.ready and engine.recovered then
-                refill:tick()
+        local function input(timeout)
+            local ev = table.pack(event.pull(timeout))
+            while ev[1] do
+                local action = screen():runtimeEvent(table.unpack(ev, 1, ev.n))
+                if action == 'interrupt' then
+                    editing = false
+                    return true
+                elseif action == 'quit' or action == 'setup' then
+                    if not stopping then
+                        editing = action == 'setup'
+                        stopping = true
+                        engine:requestStop()
+                        lastDraw = -math.huge
+                    end
+                elseif action == 'redraw' then
+                    lastDraw = -math.huge
+                end
+                ev = table.pack(event.pull(0))
+            end
+            return false
+        end
+        screen():runtime(engine, refill)
+        lastDraw = computer.uptime()
+        local interrupted = screen():discardInput()
+        while not interrupted do
+            interrupted = input(0.05)
+            if interrupted then
+                break
             end
             local now = computer.uptime()
             if now - lastDraw >= 0.5 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
+            engine:tick()
+            if engine.ready and engine.recovered then
+                refill:tick()
+            end
+            now = computer.uptime()
             if now - lastSave >= 5 then
                 engine.save()
                 lastSave = now
-            end
-            local action = screen():runtimeEvent(event.pull(0.05))
-            if action == 'interrupt' then
-                editing = false
-                break
-            elseif action == 'quit' or action == 'setup' then
-                if not stopping then
-                    editing = action == 'setup'
-                    stopping = true
-                    engine:requestStop()
-                end
-            elseif action == 'redraw' then
-                lastDraw = -math.huge
             end
             if stopping and engine:drain() then
                 local pending = false
@@ -3303,9 +3320,15 @@ function F:draw()
 end
 
 function F:run()
+    self:draw()
+    if self.ui:discardInput() then
+        self:event('interrupted')
+    end
     while not self.done do
-        self:draw()
         self:event(self.ui.event.pull())
+        if not self.done then
+            self:draw()
+        end
     end
     return not not self.saved
 end
@@ -3426,6 +3449,17 @@ function G:hit(x, y)
         if y == h.y and x >= h.x and x < h.x + h.w then
             return h.id
         end
+    end
+end
+
+function G:discardInput()
+    local interrupted = false
+    while true do
+        local name = self.event.pull(0)
+        if not name then
+            return interrupted
+        end
+        interrupted = interrupted or name == 'interrupted'
     end
 end
 
@@ -4870,9 +4904,12 @@ function R:observe(f)
     local s = self.s.feeds[f.id]
     for i, c in ipairs(f.cells) do
         if not s.loading or s.loading.index ~= i then
-            local amount, capacity = self:cell(c)
             local m = self.materials[c.material]
             local pending = s.pending[i]
+            local amount, capacity
+            if not s.initialized or pending and not pending.finish then
+                amount, capacity = self:cell(c)
+            end
             -- A machine can start between the earlier machine sample and this cell read.
             if not s.initialized or pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
@@ -4912,7 +4949,7 @@ function R:observe(f)
                         end
                     end
                 end
-            elseif amount >= m.unit then
+            elseif amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
             end
         end
@@ -4955,6 +4992,17 @@ function R:receive(f)
 end
 
 function R:tick()
+    if self.e.now < (self.scanAt or -math.huge) then
+        for _, f in ipairs(self.e.cfg.feeds) do
+            self:receive(f)
+        end
+        return
+    end
+    self:scan()
+    self.scanAt = self.e.io.time() + 1
+end
+
+function R:scan()
     local e = self.e
     self:generators()
     for _, f in ipairs(e.cfg.feeds) do

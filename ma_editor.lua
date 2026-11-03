@@ -1463,9 +1463,15 @@ function F:draw()
 end
 
 function F:run()
+    self:draw()
+    if self.ui:discardInput() then
+        self:event('interrupted')
+    end
     while not self.done do
-        self:draw()
         self:event(self.ui.event.pull())
+        if not self.done then
+            self:draw()
+        end
     end
     return not not self.saved
 end

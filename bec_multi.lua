@@ -143,35 +143,52 @@ local ok, err = xpcall(function()
         state.wiring = U.copy(cfg)
         engine.save()
         local refill = Refill.new(engine)
-        local lastDraw, lastSave = -math.huge, computer.uptime()
+        local lastDraw
+        local lastSave = computer.uptime()
         local editing = false
         local stopping = false
-        while true do
-            engine:tick()
-            if engine.ready and engine.recovered then
-                refill:tick()
+        local function input(timeout)
+            local ev = table.pack(event.pull(timeout))
+            while ev[1] do
+                local action = screen():runtimeEvent(table.unpack(ev, 1, ev.n))
+                if action == 'interrupt' then
+                    editing = false
+                    return true
+                elseif action == 'quit' or action == 'setup' then
+                    if not stopping then
+                        editing = action == 'setup'
+                        stopping = true
+                        engine:requestStop()
+                        lastDraw = -math.huge
+                    end
+                elseif action == 'redraw' then
+                    lastDraw = -math.huge
+                end
+                ev = table.pack(event.pull(0))
+            end
+            return false
+        end
+        screen():runtime(engine, refill)
+        lastDraw = computer.uptime()
+        local interrupted = screen():discardInput()
+        while not interrupted do
+            interrupted = input(0.05)
+            if interrupted then
+                break
             end
             local now = computer.uptime()
             if now - lastDraw >= 0.5 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
+            engine:tick()
+            if engine.ready and engine.recovered then
+                refill:tick()
+            end
+            now = computer.uptime()
             if now - lastSave >= 5 then
                 engine.save()
                 lastSave = now
-            end
-            local action = screen():runtimeEvent(event.pull(0.05))
-            if action == 'interrupt' then
-                editing = false
-                break
-            elseif action == 'quit' or action == 'setup' then
-                if not stopping then
-                    editing = action == 'setup'
-                    stopping = true
-                    engine:requestStop()
-                end
-            elseif action == 'redraw' then
-                lastDraw = -math.huge
             end
             if stopping and engine:drain() then
                 local pending = false
