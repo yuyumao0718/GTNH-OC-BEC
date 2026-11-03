@@ -334,7 +334,7 @@ function G:runtime(e, refill)
         2,
         2,
         e.stopping and '正在完成已接订单并回收蜂群；可按 Ctrl+C 立即暂停'
-            or e.ready and '独立调度 / 共享预缓存'
+            or e.ready and ''
             or '等待约束场完成当前周期',
         w - 3,
         ink.green
@@ -636,11 +636,11 @@ function G:arrayPanel(e, x, top, width, bottom)
     )
     local observed = (e.observations or {})[a.address]
     local views = observed or {}
-    local per = math.max(1, math.floor((bottom - top - 7) / 2))
+    local per = math.max(1, bottom - top - 5)
     self.nodePages = math.max(1, math.ceil(#a.nodes / per))
     self.nodePage = math.max(1, math.min(self.nodePage, self.nodePages))
     for i = (self.nodePage - 1) * per + 1, math.min(#a.nodes, self.nodePage * per) do
-        local y = top + 6 + (i - (self.nodePage - 1) * per - 1) * 2
+        local y = top + 5 + i - (self.nodePage - 1) * per - 1
         local n = views[i]
         local worker = b and b.workers[i]
         if b and b.phase == 'run' and n then
@@ -648,20 +648,16 @@ function G:arrayPanel(e, x, top, width, bottom)
                 x,
                 y,
                 '#' .. i .. '  ' .. exact(n.parallel) .. ' 并行  T' .. (n.tier or '-'),
-                width
+                width - 9
             )
-            if n.fast then
-                self:put(x, y + 1, '固定蜂群 · 加工中', width, ink.cyan)
-            else
-                self:bar(x, y + 1, width - 9, n.progress / n.length)
-                self:put(
-                    x + width - 8,
-                    y + 1,
-                    string.format('%5.1f%%', 100 * math.min(1, n.progress / n.length)),
-                    8,
-                    ink.cyan
-                )
-            end
+            self:put(
+                x + width - 8,
+                y,
+                n.fast and '固定蜂群'
+                    or string.format('%5.1f%%', 100 * math.min(1, n.progress / n.length)),
+                8,
+                ink.cyan
+            )
         else
             self:put(
                 x,
