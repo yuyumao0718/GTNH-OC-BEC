@@ -34,6 +34,7 @@ function E.new(cfg, state, io, modules)
         errors = {},
         observations = {},
         provided = {},
+        beeChecked = {},
         now = 0,
         settled = {},
         filterNames = {},
@@ -75,6 +76,10 @@ end
 function E:requestStop()
     self.stopping = true
     self:gate(self.cfg.channels[1], true)
+end
+
+function E:pulse()
+    return self.io.pulse and self.io.pulse()
 end
 
 function E:hold(a)
@@ -228,38 +233,33 @@ function E:remaining(s)
         return self.U.copy(b.reserve)
     end
     local result = {}
+    local unit = self.s.patterns[b.key].unit
     for _, w in ipairs(b.workers) do
         local n = self.io.proxy(w.address)
         if n.hasWork() then
-            local required, consumed = n.getRequiredCondensate(), n.getConsumedCondensate()
-            local unit = {}
-            local count = n.getParallelRecipesInProgress()
-            assert(count == w.count, '节点正在加工的份数与续做记录不一致')
-            for k, v in pairs(required) do
-                unit[k] = v / count
+            local consumed = n.getConsumedCondensate()
+            -- Completion can clear the recipe during the callback.
+            if consumed then
+                for k, v in pairs(unit) do
+                    local left = v * w.count - (consumed[k] or 0)
+                    assert(left >= 0, '节点报告的凝聚物消耗量超过配方需求')
+                    result[k] = (result[k] or 0) + left
+                end
             end
-            assert(
-                self.U.equal(unit, self.s.patterns[b.key].unit),
-                '节点配方与续做记录不一致'
-            )
-            for k, v in pairs(required) do
-                local left = v - (consumed[k] or 0)
-                assert(left >= 0, '节点报告的凝聚物消耗量超过配方需求')
-                result[k] = (result[k] or 0) + left
-            end
+        end
+        if self:pulse() then
+            return
         end
     end
     return result
 end
 
-function E:resources()
-    self.reserved = {}
+function E:resources(force)
     self.waiting = {}
     for _, a in ipairs(self.arrays) do
         local s = self.s.arrays[a.address]
         local b = s.batch
         if b then
-            self.U.add(self.reserved, self:remaining(s))
             if
                 b.phase ~= 'collect'
                 and not b.granted
@@ -270,13 +270,28 @@ function E:resources()
             end
         end
     end
+    if not force and self.io.time() < (self.resourcesAt or -math.huge) then
+        return true
+    end
+    local reserved = {}
+    for _, a in ipairs(self.arrays) do
+        local remaining = self:remaining(self.s.arrays[a.address])
+        if not remaining then
+            return false
+        end
+        self.U.add(reserved, remaining)
+    end
     -- Read node obligations first: consumption between reads can only understate free stock.
-    self.stock = self.storage.getStoredCondensate()
+    local stock = self.storage.getStoredCondensate()
+    self.stock, self.reserved = stock, reserved
     self.free = {}
     for k, v in pairs(self.stock) do
         self.free[k] = math.max(0, v - (self.reserved[k] or 0))
     end
     assert(self.U.total(self.stock) <= self.cfg.fieldLimit, '凝聚物库存超过场强容量')
+    self.resourcesAt = self.io.time() + 1
+    self.resourcesFresh = true
+    return true
 end
 
 function E:grant(b)
@@ -288,6 +303,11 @@ function E:grant(b)
     end
     if not self.U.fits(self.free, b.reserve) then
         return false
+    end
+    if not self.resourcesFresh then
+        if not self:resources(true) or not self.U.fits(self.free, b.reserve) then
+            return false
+        end
     end
     b.granted = true
     self.U.add(self.reserved, b.reserve)
@@ -501,6 +521,7 @@ function E:collections()
             self.collectAt[a.address] = self.now
             if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
+                self.resourcesAt = nil
                 self.collectAt[a.address] = nil
                 self.save()
             end
@@ -740,13 +761,23 @@ function E:support(a, meta)
 end
 
 function E:bees(a, s, want)
+    local checked = self.beeChecked[a.address]
+    if not s.bee and checked and self.now - checked.at < 10 and checked.tier == want then
+        if want and checked.count > 0 then
+            return true
+        elseif not want and checked.count == 0 and not s.lease and not s.request then
+            return true
+        end
+    end
     local n = self.io.proxy(a.nodes[1].address)
     local provided = n.getProvidedTier()
     local current = provided and provided.tier
     self.provided[a.address] = current
     if not s.bee and current == want then
+        local count = n.getAvailableNanites()
+        self.beeChecked[a.address] = { tier = current, count = count, at = self.io.time() }
         if not want then
-            if n.getAvailableNanites() ~= 0 then
+            if count ~= 0 then
                 return false
             end
             if s.lease or s.request then
@@ -757,7 +788,7 @@ function E:bees(a, s, want)
             end
             return true
         end
-        if n.getAvailableNanites() > 0 then
+        if count > 0 then
             return true
         end
     end
@@ -780,6 +811,7 @@ function E:bees(a, s, want)
         end
         local tier = current or want
         assert(s.lease and s.lease[tier], '阵列内的蜂群没有借用记录')
+        self.beeChecked[a.address] = nil
         s.bee = { tier = tier, loading = not current, phase = 'out' }
         self.save()
     end
@@ -806,20 +838,19 @@ function E:bees(a, s, want)
             self.log:finish(owner)
         end
     elseif b.phase == 'sync' then
-        if
-            b.loading and current == b.tier and n.getAvailableNanites() > 0
-            or not b.loading and n.getAvailableNanites() == 0
-        then
+        local count = n.getAvailableNanites()
+        if b.loading and current == b.tier and count > 0 or not b.loading and count == 0 then
             if b.loading then
-                s.counts[b.tier] = n.getAvailableNanites()
+                s.counts[b.tier] = count
                 self:beeCount(a, cell, s.counts[b.tier])
             else
                 s.lease = nil
                 s.counts = {}
             end
+            self.beeChecked[a.address] = { tier = current, count = count, at = self.io.time() }
             s.bee = nil
             self.save()
-        elseif b.loading and n.getAvailableNanites() == 0 then
+        elseif b.loading and count == 0 then
             local returned = self.log:stack(box.inventory, slot)
             if returned and returned.storedItemCount > 0 then
                 b.phase = 'out'
@@ -960,6 +991,7 @@ function E:array(a)
             assert(assigned == b.count, '节点取料总数与分配数量不一致')
             b.reserve = self.U.scale(meta.unit, assigned)
             b.phase = 'wait'
+            self.resourcesAt = nil
             self.save()
         end
     elseif b.phase == 'collect' then
@@ -975,6 +1007,9 @@ function E:array(a)
         end
         self:support(a, meta)
         if not self:grant(b) then
+            if self:pulse() then
+                return
+            end
             self:bees(a, s, nil)
             self.status[a.address] = self.U.total(b.reserve) > self.cfg.fieldLimit
                     and string.format(
@@ -1020,7 +1055,7 @@ function E:array(a)
             return
         end
         local workers = {}
-        self.observations[a.address] = {}
+        local views = {}
         for index, w in ipairs(b.workers) do
             local n = self.io.proxy(w.address)
             if n.hasWork() then
@@ -1029,7 +1064,7 @@ function E:array(a)
                 if b.fixed or n.hasWork() then
                     workers[#workers + 1] =
                         { progress = progress, tier = tier, address = w.address }
-                    self.observations[a.address][index] = {
+                    views[index] = {
                         address = w.address,
                         progress = progress,
                         tier = tier,
@@ -1039,7 +1074,11 @@ function E:array(a)
                     }
                 end
             end
+            if self:pulse() then
+                return
+            end
         end
+        self.observations[a.address] = views
         self.nodeHealth = self.nodeHealth or {}
         local health = self.nodeHealth[a.address] or { at = self.now, index = 1 }
         self.nodeHealth[a.address] = health
@@ -1068,6 +1107,7 @@ function E:array(a)
             end
             self:filters(a, {})
             b.phase = 'return'
+            self.resourcesAt = nil
             self.save()
             return
         end
@@ -1129,6 +1169,7 @@ end
 
 function E:tick()
     self.now = self.io.time()
+    self.resourcesFresh = false
     if self.now - (self.fieldHealthAt or -math.huge) >= 10 then
         assert(self.storage.isWorkAllowed() and self.storage.hasWork(), '约束场未运行')
         assert(
@@ -1159,7 +1200,9 @@ function E:tick()
         end
         self.recovered = true
     end
-    self:resources()
+    if not self:resources() then
+        return
+    end
     self:collections()
     for _, c in ipairs(self.cfg.channels) do
         if not self.errors[c.id] then
@@ -1183,6 +1226,9 @@ function E:tick()
                     self.io.proxy(n.address).setWorkAllowed(false)
                 end
             end
+        end
+        if self:pulse() then
+            return
         end
     end
     self:admissionTick()

@@ -147,6 +147,7 @@ local ok, err = xpcall(function()
         local lastSave = computer.uptime()
         local editing = false
         local stopping = false
+        local interrupted = false
         local function input(timeout)
             local ev = table.pack(event.pull(timeout))
             while ev[1] do
@@ -168,24 +169,37 @@ local ok, err = xpcall(function()
             end
             return false
         end
-        screen():runtime(engine, refill)
-        lastDraw = computer.uptime()
-        local interrupted = screen():discardInput()
-        while not interrupted do
-            interrupted = input(0.05)
-            if interrupted then
-                break
-            end
+        local function draw()
             local now = computer.uptime()
             if now - lastDraw >= 0.5 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
+        end
+        screen():runtime(engine, refill)
+        lastDraw = computer.uptime()
+        interrupted = screen():discardInput()
+        engine.io.pulse = function()
+            interrupted = interrupted or input(0)
+            if not interrupted then
+                draw()
+            end
+            return interrupted
+        end
+        while not interrupted do
+            interrupted = input(0.05)
+            if interrupted then
+                break
+            end
+            draw()
             engine:tick()
+            if interrupted then
+                break
+            end
             if engine.ready and engine.recovered then
                 refill:tick()
             end
-            now = computer.uptime()
+            local now = computer.uptime()
             if now - lastSave >= 5 then
                 engine.save()
                 lastSave = now
