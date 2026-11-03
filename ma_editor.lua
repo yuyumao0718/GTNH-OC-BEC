@@ -39,7 +39,6 @@ function F.new(ui, cfg, component, save)
         fluidIndex = 1,
         fluidPage = 1,
         fluidKey = 'low',
-        extraBoxes = {},
         message = '修改会自动暂存；按 S 校验并保存',
         schema = {},
     }, F)
@@ -88,6 +87,9 @@ function F:record(section)
         )
     end
     self.cfg[section][#self.cfg[section] + 1] = r
+    if section == 'beePools' then
+        r.boxes = { 1 }
+    end
     if section == 'beePools' and #self.cfg.beePools == 1 then
         for _, a in ipairs(self.cfg.arrays) do
             if a.beePool == '' then
@@ -174,10 +176,10 @@ function F:boxes(pool)
     for _, c in ipairs(pool.cells) do
         seen[c.box] = true
     end
-    for box in pairs(self.extraBoxes[pool.id] or {}) do
+    for _, box in ipairs(pool.boxes or {}) do
         seen[box] = true
     end
-    if not next(seen) then
+    if not pool.boxes and not next(seen) then
         seen[1] = true
     end
     local boxes = {}
@@ -405,9 +407,15 @@ function F:form(fluidIndex)
         field('蜂群池名称', x, 'name', 'text')
         action('新增箱子', function()
             local boxes = self:boxes(x)
-            local box = boxes[#boxes] + 1
-            self.extraBoxes[x.id] = self.extraBoxes[x.id] or {}
-            self.extraBoxes[x.id][box] = true
+            local box = 1
+            for _, number in ipairs(boxes) do
+                if number == box then
+                    box = box + 1
+                end
+            end
+            boxes[#boxes + 1] = box
+            table.sort(boxes)
+            x.boxes = boxes
         end)
         title('选择左侧箱子，批量登记槽位和等级')
     elseif o.kind == 'array' then
@@ -869,6 +877,42 @@ function F:act(action, button)
             self:changed()
         end
     elseif action == 'delete' and o then
+        if o.kind == 'box' then
+            local pool = o.value
+            pool.boxes = self:boxes(pool)
+            for i = #pool.cells, 1, -1 do
+                if pool.cells[i].box == o.box then
+                    table.remove(pool.cells, i)
+                end
+            end
+            for i, box in ipairs(pool.boxes) do
+                if box == o.box then
+                    table.remove(pool.boxes, i)
+                    break
+                end
+            end
+            for _, a in ipairs(self.cfg.arrays) do
+                if a.beePool == pool.id then
+                    for i = #a.beeBoxes, 1, -1 do
+                        local box = a.beeBoxes[i]
+                        if box.box == o.box then
+                            table.remove(a.beeBoxes, i)
+                            self:removeUnusedInventory(box.inventory)
+                        end
+                    end
+                end
+            end
+            self.selected = {}
+            self.boxPage, self.offset = 1, 1
+            for i, item in ipairs(self:objects()) do
+                if item.kind == 'pool' and item.value == pool then
+                    self.pos = i
+                    break
+                end
+            end
+            self:changed()
+            return
+        end
         local section = o.kind == 'pool' and 'beePools'
         if section then
             for i, v in ipairs(self.cfg[section]) do
@@ -945,6 +989,7 @@ function F:act(action, button)
     elseif action == 'grade-' or action == 'grade+' then
         self.grade = math.max(1, math.min(10, self.grade + (action == 'grade-' and -1 or 1)))
     elseif (action == 'register' or action == 'unregister') and o and o.kind == 'box' then
+        o.value.boxes = self:boxes(o.value)
         for slot, selected in pairs(self.selected) do
             if selected then
                 local cell, index
@@ -1323,8 +1368,8 @@ function F:draw()
     if self.tab == 2 then
         ui:control('add', 2, h - 4, '新增蜂群池', false, left)
     end
-    if o and o.kind == 'pool' then
-        ui:control('delete', 2, h - 3, '删除所选')
+    if o and (o.kind == 'pool' or o.kind == 'box') then
+        ui:control('delete', 2, h - 3, o.kind == 'box' and '删除箱子' or '删除蜂群池')
     end
     local stride = w >= 120 and 1 or 2
     self.perPage = math.max(1, math.floor((h - 13) / stride))
