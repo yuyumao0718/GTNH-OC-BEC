@@ -15,7 +15,7 @@ function R.new(engine)
     end
     for _, f in ipairs(e.cfg.feeds) do
         self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {}, retry = {} }
-        assert(e.log:size(f.io) == 12, '补库库存位置不是 ME-IO 端口：' .. f.io)
+        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
             if not loading or loading.index ~= i then
@@ -32,16 +32,16 @@ function R:cell(c, stack)
     stack = stack
         or assert(
             e.log:stack(source, c.slot),
-            '指定驱动器槽位中没有补库元件：' .. source .. ':' .. c.slot
+            '指定驱动器槽位中没有流体元件：' .. source .. ':' .. c.slot
         )
     assert(
         stack.storedFluidCount and stack.remainingFluidCount,
-        '补库槽位须放置已分区的 ME 流体存储元件'
+        '驱动器槽位须放置已分区的 ME 流体存储元件'
     )
     for _, fluid in pairs(stack.availableFluids or {}) do
         assert(
             fluid.name == c.material,
-            '补库元件中含有其他流体，预期流体为：' .. c.material
+            '流体元件中含有其他流体，预期流体为：' .. c.material
         )
     end
     return stack.storedFluidCount, stack.storedFluidCount + stack.remainingFluidCount
@@ -204,7 +204,7 @@ function R:tick()
     end
     for _, f in ipairs(e.cfg.feeds) do
         local s = self.s.feeds[f.id]
-        self.detail[f.id] = s.loading and '搬运补库元件'
+        self.detail[f.id] = s.loading and '搬运流体元件'
             or next(s.pending) and '等待纠缠装置加工'
             or '库存充足'
         if not s.loading and not next(s.pending) then
@@ -236,7 +236,7 @@ function R:tick()
                         s.loading = { index = i, phase = 'out', capacity = cap }
                         pending[m.condensate] = (pending[m.condensate] or 0) + cap
                         capacity = capacity + cap
-                        self.detail[f.id] = '搬运补库元件'
+                        self.detail[f.id] = '搬运流体元件'
                         e.save()
                         break
                     else

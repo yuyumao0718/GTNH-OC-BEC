@@ -580,7 +580,7 @@ function C.validate(cfg, component, U)
     for _, b in ipairs(cfg.bands) do
         assert(
             not band[b.material] and b.high > b.low and b.high <= cfg.fieldLimit,
-            '流体重复配置，或补库目标不满足：下限 < 目标 ≤ 场强容量'
+            '流体重复配置，或预缓存目标不满足：下限 < 目标 ≤ 场强容量'
         )
         band[b.material] = true
     end
@@ -605,7 +605,7 @@ function C.validate(cfg, component, U)
         for _, c in ipairs(f.cells) do
             assert(
                 band[c.material] and not seen[c.material],
-                '原料网的流体重复配置，或未设置补库目标'
+                '原料网的流体重复配置，或未设置预缓存目标'
             )
             seen[c.material] = true
             connected(c.inventory, f.io)
@@ -3669,7 +3669,7 @@ function G:runtime(e, refill)
     end
     for _, f in ipairs(e.cfg.feeds) do
         channels[#channels + 1] = {
-            label = '补库：' .. self:recordName(e.cfg, 'feeds', f),
+            label = '预缓存纠缠流体：' .. self:recordName(e.cfg, 'feeds', f),
             status = refill and refill.detail[f.id] or '等待',
         }
     end
@@ -3697,7 +3697,7 @@ function G:runtime(e, refill)
     )
     if self.tab == 1 then
         self:put(left - 38, 9, '现存', 12, ink.dim)
-        self:put(left - 25, 9, '补库目标', 12, ink.dim)
+        self:put(left - 25, 9, '预缓存目标', 12, ink.dim)
         self:put(left - 12, 9, '状态', 12, ink.dim)
     end
     for i = first, math.min(#list, first + self.perPage - 1) do
@@ -3712,7 +3712,7 @@ function G:runtime(e, refill)
             local reserve = (e.reserved or {})[r.id] or 0
             local status = not have and '待读取'
                 or have < reserve and '库存不足'
-                or r.band and have - reserve <= r.band.low and '等待补库'
+                or r.band and have - reserve <= r.band.low and '等待预缓存'
                 or '充足'
             self:put(2, y, prefix .. e.M.name(r.id, true), left - 42, ink.text, bg)
             self:put(left - 38, y, amount(have), 12, ink.cyan, bg)
@@ -4602,14 +4602,18 @@ function R.check(cfg, state, U, proxy, M)
         if s.loading or next(s.pending or {}) then
             active = true
             local a, b = before.feeds[id], after.feeds[id]
-            assert(b, '补库尚未完成，请保留原料网：' .. id)
+            assert(b, '纠缠流体尚未补充完成，请保留原料子网：' .. id)
             if s.loading then
                 same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)
             end
             for i, c in ipairs(a.cells) do
                 if (s.pending or {})[i] or s.loading and s.loading.index == i then
-                    same(c, b.cells[i], '尚在补库的元件：' .. id .. ' / ' .. i)
+                    same(
+                        c,
+                        b.cells[i],
+                        '预缓存仍需使用的流体元件：' .. id .. ' / ' .. i
+                    )
                     inventory(c.inventory)
                 end
             end
@@ -4767,7 +4771,7 @@ function R.new(engine)
     end
     for _, f in ipairs(e.cfg.feeds) do
         self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {}, retry = {} }
-        assert(e.log:size(f.io) == 12, '补库库存位置不是 ME-IO 端口：' .. f.io)
+        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
             if not loading or loading.index ~= i then
@@ -4784,16 +4788,16 @@ function R:cell(c, stack)
     stack = stack
         or assert(
             e.log:stack(source, c.slot),
-            '指定驱动器槽位中没有补库元件：' .. source .. ':' .. c.slot
+            '指定驱动器槽位中没有流体元件：' .. source .. ':' .. c.slot
         )
     assert(
         stack.storedFluidCount and stack.remainingFluidCount,
-        '补库槽位须放置已分区的 ME 流体存储元件'
+        '驱动器槽位须放置已分区的 ME 流体存储元件'
     )
     for _, fluid in pairs(stack.availableFluids or {}) do
         assert(
             fluid.name == c.material,
-            '补库元件中含有其他流体，预期流体为：' .. c.material
+            '流体元件中含有其他流体，预期流体为：' .. c.material
         )
     end
     return stack.storedFluidCount, stack.storedFluidCount + stack.remainingFluidCount
@@ -4956,7 +4960,7 @@ function R:tick()
     end
     for _, f in ipairs(e.cfg.feeds) do
         local s = self.s.feeds[f.id]
-        self.detail[f.id] = s.loading and '搬运补库元件'
+        self.detail[f.id] = s.loading and '搬运流体元件'
             or next(s.pending) and '等待纠缠装置加工'
             or '库存充足'
         if not s.loading and not next(s.pending) then
@@ -4988,7 +4992,7 @@ function R:tick()
                         s.loading = { index = i, phase = 'out', capacity = cap }
                         pending[m.condensate] = (pending[m.condensate] or 0) + cap
                         capacity = capacity + cap
-                        self.detail[f.id] = '搬运补库元件'
+                        self.detail[f.id] = '搬运流体元件'
                         e.save()
                         break
                     else

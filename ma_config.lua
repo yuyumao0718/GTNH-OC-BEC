@@ -362,7 +362,7 @@ function C.validate(cfg, component, U)
     for _, b in ipairs(cfg.bands) do
         assert(
             not band[b.material] and b.high > b.low and b.high <= cfg.fieldLimit,
-            '流体重复配置，或补库目标不满足：下限 < 目标 ≤ 场强容量'
+            '流体重复配置，或预缓存目标不满足：下限 < 目标 ≤ 场强容量'
         )
         band[b.material] = true
     end
@@ -387,7 +387,7 @@ function C.validate(cfg, component, U)
         for _, c in ipairs(f.cells) do
             assert(
                 band[c.material] and not seen[c.material],
-                '原料网的流体重复配置，或未设置补库目标'
+                '原料网的流体重复配置，或未设置预缓存目标'
             )
             seen[c.material] = true
             connected(c.inventory, f.io)

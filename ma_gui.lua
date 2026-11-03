@@ -397,7 +397,7 @@ function G:runtime(e, refill)
     end
     for _, f in ipairs(e.cfg.feeds) do
         channels[#channels + 1] = {
-            label = '补库：' .. self:recordName(e.cfg, 'feeds', f),
+            label = '预缓存纠缠流体：' .. self:recordName(e.cfg, 'feeds', f),
             status = refill and refill.detail[f.id] or '等待',
         }
     end
@@ -425,7 +425,7 @@ function G:runtime(e, refill)
     )
     if self.tab == 1 then
         self:put(left - 38, 9, '现存', 12, ink.dim)
-        self:put(left - 25, 9, '补库目标', 12, ink.dim)
+        self:put(left - 25, 9, '预缓存目标', 12, ink.dim)
         self:put(left - 12, 9, '状态', 12, ink.dim)
     end
     for i = first, math.min(#list, first + self.perPage - 1) do
@@ -440,7 +440,7 @@ function G:runtime(e, refill)
             local reserve = (e.reserved or {})[r.id] or 0
             local status = not have and '待读取'
                 or have < reserve and '库存不足'
-                or r.band and have - reserve <= r.band.low and '等待补库'
+                or r.band and have - reserve <= r.band.low and '等待预缓存'
                 or '充足'
             self:put(2, y, prefix .. e.M.name(r.id, true), left - 42, ink.text, bg)
             self:put(left - 38, y, amount(have), 12, ink.cyan, bg)

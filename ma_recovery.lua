@@ -121,14 +121,18 @@ function R.check(cfg, state, U, proxy, M)
         if s.loading or next(s.pending or {}) then
             active = true
             local a, b = before.feeds[id], after.feeds[id]
-            assert(b, '补库尚未完成，请保留原料网：' .. id)
+            assert(b, '纠缠流体尚未补充完成，请保留原料子网：' .. id)
             if s.loading then
                 same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)
             end
             for i, c in ipairs(a.cells) do
                 if (s.pending or {})[i] or s.loading and s.loading.index == i then
-                    same(c, b.cells[i], '尚在补库的元件：' .. id .. ' / ' .. i)
+                    same(
+                        c,
+                        b.cells[i],
+                        '预缓存仍需使用的流体元件：' .. id .. ' / ' .. i
+                    )
                     inventory(c.inventory)
                 end
             end
