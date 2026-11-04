@@ -771,6 +771,15 @@ function F:act(action, button)
     if not action then
         return
     end
+    if
+        self.popup
+        and self.popup.clearRecipes
+        and action ~= 'back'
+        and action ~= 'quit'
+        and not action:match('^pick:')
+    then
+        return
+    end
     if action == 'quit' then
         self.edit = nil
         self.done = true
@@ -819,7 +828,26 @@ function F:act(action, button)
         return
     end
     local o = self:object()
-    if action:match('^tab:') then
+    if action == 'clear-recipes' then
+        self.popup = {
+            title = '清除全部配方加工记录？',
+            clearRecipes = true,
+            page = 1,
+            current = false,
+            options = {
+                {
+                    value = false,
+                    label = '取消，保留记录',
+                    detail = '保留已记录的流体需求和加工阶段',
+                },
+                {
+                    value = true,
+                    label = '确认清除全部配方加工记录',
+                    detail = '仅清除加工信息，下次取料时重新记录',
+                },
+            },
+        }
+    elseif action:match('^tab:') then
         self:openTab(tonumber(action:sub(5)))
     elseif action:match('^select:') then
         self.pos = tonumber(action:sub(8))
@@ -957,7 +985,17 @@ function F:act(action, button)
     elseif action:match('^pick:') and self.popup then
         local p = self.popup
         local option = p.options[tonumber(action:sub(6))]
-        if p.checked then
+        if p.clearRecipes then
+            self.popup = nil
+            if option.value then
+                local ok, result = pcall(self.save.clearRecipes)
+                self.message = ok
+                        and ('已清除 ' .. result .. ' 条配方加工记录，已保存')
+                    or tostring(result):gsub('^.-:%d+: ', '')
+            else
+                self.message = '已取消清除，配方加工记录保持不变'
+            end
+        elseif p.checked then
             p.checked[option.value] = not p.checked[option.value]
         else
             p.choose(option.value)
@@ -1367,6 +1405,8 @@ function F:draw()
     ui:control('down', 12, h - 5, '下一个', false, left - 10)
     if self.tab == 2 then
         ui:control('add', 2, h - 4, '新增蜂群池', false, left)
+    elseif self.tab == 4 then
+        ui:control('clear-recipes', 2, h - 4, '清除配方记录', false, left)
     end
     if o and (o.kind == 'pool' or o.kind == 'box') then
         ui:control('delete', 2, h - 3, o.kind == 'box' and '删除箱子' or '删除蜂群池')
@@ -1452,13 +1492,25 @@ function F:draw()
             ink.dim
         )
     end
-    ui:control('prev', x, b.nav, '上一页')
-    ui:control('next', x + 12, b.nav, '下一页')
-    ui:control('refresh', x + 24, b.nav, 'F 刷新')
-    ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
-    ui:control('save', 2, h, 'S 保存并返回')
-    ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
-    ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
+    if self.popup and self.popup.clearRecipes then
+        ui:wrap(
+            2,
+            h - 2,
+            '确认后立即清除并保存；请选择取消或确认清除',
+            w - 3,
+            2,
+            ink.amber
+        )
+        ui:control('back', 2, h, 'Esc 取消')
+    else
+        ui:control('prev', x, b.nav, '上一页')
+        ui:control('next', x + 12, b.nav, '下一页')
+        ui:control('refresh', x + 24, b.nav, 'F 刷新')
+        ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
+        ui:control('save', 2, h, 'S 保存并返回')
+        ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
+        ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
+    end
     ui:paint()
 end
 

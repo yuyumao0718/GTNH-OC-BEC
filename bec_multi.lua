@@ -29,7 +29,7 @@ if command ~= 'setup' and command ~= 'check' and command ~= 'run' and command ~=
     )
     return
 end
-local gui
+local gui, engine
 local function screen()
     if not gui then
         gui = load('ma_gui').new(component.gpu, event, unicode, C, M)
@@ -56,6 +56,14 @@ local function configure()
     end
     local result = screen():edit(cfg, component, {
         U = U,
+        clearRecipes = function()
+            local count, patterns = store.clearRecipes()
+            if engine then
+                engine.s.patterns = patterns
+                engine.poolSupport = {}
+            end
+            return count
+        end,
         draft = function(value)
             store.write('multi.setup', value)
         end,
@@ -78,7 +86,6 @@ if command == 'setup' then
     term.clear()
     return
 end
-local engine
 local ok, err = xpcall(function()
     repeat
         local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
