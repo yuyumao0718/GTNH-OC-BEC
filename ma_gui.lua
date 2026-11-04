@@ -270,7 +270,7 @@ local function phase(b, s)
         return (s.bee.loading and '装载 T' or '回收 T') .. s.bee.tier .. ' 蜂群'
     end
     if s and s.request then
-        return (s.request.supply and '等待补充 T' or '等待 T') .. s.request.tier .. ' 蜂群'
+        return '等待 T' .. s.request.tier .. ' 蜂群'
     end
     if b.phase == 'wait' and not b.granted then
         return '等待凝聚物'

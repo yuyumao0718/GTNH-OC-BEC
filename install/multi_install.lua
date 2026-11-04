@@ -1205,18 +1205,11 @@ function E:borrow(a, s, tier)
         end
     end
     local free = {}
-    local missing = false
     for _, c in ipairs(self.pools[a.beePool].cells) do
         if c.tier == tier and not used[cellKey(c)] then
-            local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
-            if stack and stack.storedItemCount and stack.storedItemCount > 0 then
-                free[#free + 1] = c
-            else
-                missing = true
-            end
+            free[#free + 1] = c
         end
     end
-    s.request.supply = #free == 0 and missing or nil
     local c = free[earlier + 1]
     if not c then
         if requested then
@@ -1224,7 +1217,6 @@ function E:borrow(a, s, tier)
         end
         return false
     end
-    self:beeCount(a, c)
     s.lease = { [tier] = { tier = tier, box = c.box, slot = c.slot } }
     s.request = nil
     s.counts = {}
@@ -1536,25 +1528,14 @@ function E:filters(a, unit)
         return
     end
     local d = self.io.proxy(a.diode)
-    assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
     local slots = self.filterSlots[a.address] or d.getCondensateFilterCount()
     self.filterSlots[a.address] = slots
     assert(#names <= slots, '麦克斯韦门过滤槽不足')
-    local before = self.filterNames[a.address]
+    local before = self.filterNames[a.address] or d.getCondensateFilters()
     for i = 1, slots do
-        local previous = before and before[i]
-        if not before then
-            previous = d.getCondensateFilterAt(i)
-        end
-        if previous ~= names[i] then
+        if before[i] ~= names[i] then
             d.setCondensateFilterAt(i, names[i])
         end
-    end
-    for i = 1, slots do
-        assert(
-            d.getCondensateFilterAt(i) == names[i],
-            '麦克斯韦门过滤器被覆盖，请移除普通流体仓'
-        )
     end
     self.filterNames[a.address] = names
 end
@@ -1598,12 +1579,16 @@ function E:bees(a, s, want)
     local n = self.io.proxy(a.nodes[1].address)
     local current
     if not s.bee and not s.request then
-        local provided = n.getProvidedTier()
-        current = provided and provided.tier
+        if checked then
+            current = checked.tier
+        else
+            local provided = n.getProvidedTier()
+            current = provided and provided.tier
+        end
         self.provided[a.address] = current
     end
     if not s.bee and current == want then
-        local count = n.getAvailableNanites()
+        local count = checked and checked.count or n.getAvailableNanites()
         self.beeChecked[a.address] = { tier = current, count = count }
         if not want then
             if count ~= 0 then
@@ -1629,9 +1614,7 @@ function E:bees(a, s, want)
                 self.save()
             end
             if not self:borrow(a, s, want) then
-                self.status[a.address] = (s.request.supply and '等待补充 T' or '等待 T')
-                    .. want
-                    .. ' 蜂群'
+                self.status[a.address] = '等待 T' .. want .. ' 蜂群'
                 return false
             end
         end
@@ -1658,9 +1641,6 @@ function E:bees(a, s, want)
         end
     end
     if b.phase == 'io' then
-        if not self.log:stack(port, 7) then
-            return false
-        end
         b.phase = 'back'
         if self:pulse() then
             return false
@@ -1692,15 +1672,10 @@ function E:bees(a, s, want)
             self.beeChecked[a.address] = { tier = current, count = count }
             s.bee = nil
             self.save()
-        elseif b.loading and count == 0 then
-            local returned = self.log:stack(box.inventory, slot)
-            if returned and returned.storedItemCount > 0 then
-                b.phase = 'out'
-                self.save()
-            else
-                self.status[a.address] =
-                    '等待蜂群装载确认，请检查元件内是否有蜂群'
+            if not b.loading and want then
+                return self:bees(a, s, want)
             end
+            return current == want
         end
     end
     return false
@@ -1945,8 +1920,10 @@ function E:array(a)
         end
     elseif b.phase == 'run' then
         if s.bee then
-            self:bees(a, s, s.bee.tier)
-            return
+            local loading = s.bee.loading and s.bee.tier or nil
+            if not self:bees(a, s, loading) then
+                return
+            end
         end
         local workers = {}
         local views = {}
@@ -3947,7 +3924,7 @@ local function phase(b, s)
         return (s.bee.loading and '装载 T' or '回收 T') .. s.bee.tier .. ' 蜂群'
     end
     if s and s.request then
-        return (s.request.supply and '等待补充 T' or '等待 T') .. s.request.tier .. ' 蜂群'
+        return '等待 T' .. s.request.tier .. ' 蜂群'
     end
     if b.phase == 'wait' and not b.granted then
         return '等待凝聚物'
@@ -4645,11 +4622,16 @@ local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
     state.moves = state.moves or {}
+    local recovering = {}
+    for owner in pairs(state.moves) do
+        recovering[owner] = true
+    end
     return setmetatable({
         state = state,
         proxy = proxy,
         save = save,
         inventories = U.index(cfg.inventories),
+        recovering = recovering,
     }, L)
 end
 
@@ -4694,9 +4676,6 @@ function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
             return false
         end
     end
-    if self:stack(to, targetSlot) then
-        return false
-    end
     self.state.moves[owner] = {
         from = from,
         to = to,
@@ -4713,29 +4692,28 @@ function L:tick(owner)
     if m.done then
         return true
     end
-    local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
+    -- Only a restored move may have completed before its acknowledgement was saved.
+    if self.recovering[owner] then
+        local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
+        if not source and (target or m.ioSink and self:stack(m.to, 7)) then
+            m.intent = nil
+            m.done = true
+            return true
+        end
+        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
+        assert(source or not m.ioSink, '找不到正在搬运的元件：' .. owner)
+        self.recovering[owner] = nil
+    end
     if not m.intent then
-        assert(
-            source and not target,
-            '元件位置与搬运记录不一致，请检查是否被手动移动：' .. owner
-        )
         m.intent = true
         self.save()
     end
-    if source then
-        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
-        local from, to = self.inventories[m.from], self.inventories[m.to]
-        local n, err = self.proxy(from.transposer)
-            .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
-        assert(n ~= nil, err or '元件搬运失败')
-        if n == 0 then
-            return false
-        end
-    else
-        assert(
-            target or (m.ioSink and self:stack(m.to, 7)),
-            '找不到正在搬运的元件：' .. owner
-        )
+    local from, to = self.inventories[m.from], self.inventories[m.to]
+    local n, err = self.proxy(from.transposer)
+        .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
+    assert(n ~= nil, err or '元件搬运失败')
+    if n == 0 then
+        return false
     end
     m.intent = nil
     m.done = true
@@ -4744,6 +4722,7 @@ end
 
 function L:finish(owner)
     self.state.moves[owner] = nil
+    self.recovering[owner] = nil
     self.save()
 end
 

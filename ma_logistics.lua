@@ -3,11 +3,16 @@ local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
     state.moves = state.moves or {}
+    local recovering = {}
+    for owner in pairs(state.moves) do
+        recovering[owner] = true
+    end
     return setmetatable({
         state = state,
         proxy = proxy,
         save = save,
         inventories = U.index(cfg.inventories),
+        recovering = recovering,
     }, L)
 end
 
@@ -52,9 +57,6 @@ function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
             return false
         end
     end
-    if self:stack(to, targetSlot) then
-        return false
-    end
     self.state.moves[owner] = {
         from = from,
         to = to,
@@ -71,29 +73,28 @@ function L:tick(owner)
     if m.done then
         return true
     end
-    local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
+    -- Only a restored move may have completed before its acknowledgement was saved.
+    if self.recovering[owner] then
+        local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
+        if not source and (target or m.ioSink and self:stack(m.to, 7)) then
+            m.intent = nil
+            m.done = true
+            return true
+        end
+        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
+        assert(source or not m.ioSink, '找不到正在搬运的元件：' .. owner)
+        self.recovering[owner] = nil
+    end
     if not m.intent then
-        assert(
-            source and not target,
-            '元件位置与搬运记录不一致，请检查是否被手动移动：' .. owner
-        )
         m.intent = true
         self.save()
     end
-    if source then
-        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
-        local from, to = self.inventories[m.from], self.inventories[m.to]
-        local n, err = self.proxy(from.transposer)
-            .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
-        assert(n ~= nil, err or '元件搬运失败')
-        if n == 0 then
-            return false
-        end
-    else
-        assert(
-            target or (m.ioSink and self:stack(m.to, 7)),
-            '找不到正在搬运的元件：' .. owner
-        )
+    local from, to = self.inventories[m.from], self.inventories[m.to]
+    local n, err = self.proxy(from.transposer)
+        .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
+    assert(n ~= nil, err or '元件搬运失败')
+    if n == 0 then
+        return false
     end
     m.intent = nil
     m.done = true
@@ -102,6 +103,7 @@ end
 
 function L:finish(owner)
     self.state.moves[owner] = nil
+    self.recovering[owner] = nil
     self.save()
 end
 

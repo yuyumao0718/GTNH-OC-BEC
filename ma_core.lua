@@ -493,18 +493,11 @@ function E:borrow(a, s, tier)
         end
     end
     local free = {}
-    local missing = false
     for _, c in ipairs(self.pools[a.beePool].cells) do
         if c.tier == tier and not used[cellKey(c)] then
-            local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
-            if stack and stack.storedItemCount and stack.storedItemCount > 0 then
-                free[#free + 1] = c
-            else
-                missing = true
-            end
+            free[#free + 1] = c
         end
     end
-    s.request.supply = #free == 0 and missing or nil
     local c = free[earlier + 1]
     if not c then
         if requested then
@@ -512,7 +505,6 @@ function E:borrow(a, s, tier)
         end
         return false
     end
-    self:beeCount(a, c)
     s.lease = { [tier] = { tier = tier, box = c.box, slot = c.slot } }
     s.request = nil
     s.counts = {}
@@ -824,25 +816,14 @@ function E:filters(a, unit)
         return
     end
     local d = self.io.proxy(a.diode)
-    assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
     local slots = self.filterSlots[a.address] or d.getCondensateFilterCount()
     self.filterSlots[a.address] = slots
     assert(#names <= slots, '麦克斯韦门过滤槽不足')
-    local before = self.filterNames[a.address]
+    local before = self.filterNames[a.address] or d.getCondensateFilters()
     for i = 1, slots do
-        local previous = before and before[i]
-        if not before then
-            previous = d.getCondensateFilterAt(i)
-        end
-        if previous ~= names[i] then
+        if before[i] ~= names[i] then
             d.setCondensateFilterAt(i, names[i])
         end
-    end
-    for i = 1, slots do
-        assert(
-            d.getCondensateFilterAt(i) == names[i],
-            '麦克斯韦门过滤器被覆盖，请移除普通流体仓'
-        )
     end
     self.filterNames[a.address] = names
 end
@@ -886,12 +867,16 @@ function E:bees(a, s, want)
     local n = self.io.proxy(a.nodes[1].address)
     local current
     if not s.bee and not s.request then
-        local provided = n.getProvidedTier()
-        current = provided and provided.tier
+        if checked then
+            current = checked.tier
+        else
+            local provided = n.getProvidedTier()
+            current = provided and provided.tier
+        end
         self.provided[a.address] = current
     end
     if not s.bee and current == want then
-        local count = n.getAvailableNanites()
+        local count = checked and checked.count or n.getAvailableNanites()
         self.beeChecked[a.address] = { tier = current, count = count }
         if not want then
             if count ~= 0 then
@@ -917,9 +902,7 @@ function E:bees(a, s, want)
                 self.save()
             end
             if not self:borrow(a, s, want) then
-                self.status[a.address] = (s.request.supply and '等待补充 T' or '等待 T')
-                    .. want
-                    .. ' 蜂群'
+                self.status[a.address] = '等待 T' .. want .. ' 蜂群'
                 return false
             end
         end
@@ -946,9 +929,6 @@ function E:bees(a, s, want)
         end
     end
     if b.phase == 'io' then
-        if not self.log:stack(port, 7) then
-            return false
-        end
         b.phase = 'back'
         if self:pulse() then
             return false
@@ -980,15 +960,10 @@ function E:bees(a, s, want)
             self.beeChecked[a.address] = { tier = current, count = count }
             s.bee = nil
             self.save()
-        elseif b.loading and count == 0 then
-            local returned = self.log:stack(box.inventory, slot)
-            if returned and returned.storedItemCount > 0 then
-                b.phase = 'out'
-                self.save()
-            else
-                self.status[a.address] =
-                    '等待蜂群装载确认，请检查元件内是否有蜂群'
+            if not b.loading and want then
+                return self:bees(a, s, want)
             end
+            return current == want
         end
     end
     return false
@@ -1233,8 +1208,10 @@ function E:array(a)
         end
     elseif b.phase == 'run' then
         if s.bee then
-            self:bees(a, s, s.bee.tier)
-            return
+            local loading = s.bee.loading and s.bee.tier or nil
+            if not self:bees(a, s, loading) then
+                return
+            end
         end
         local workers = {}
         local views = {}
