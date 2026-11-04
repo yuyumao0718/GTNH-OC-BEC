@@ -3138,9 +3138,7 @@ function F:event(name, _, ch, code, direction)
             e.text = tostring(ch):gsub('[\r\n]', '')
             e.replace = false
         elseif name == 'key_down' then
-            if code == 1 then
-                self.edit = nil
-            elseif code == 28 then
+            if code == 28 then
                 self:commit()
             elseif code == 14 then
                 e.text = self.ui.u.sub(e.text, 1, math.max(0, self.ui.u.len(e.text) - 1))
@@ -3171,8 +3169,6 @@ function F:event(name, _, ch, code, direction)
             self:act('delete')
         elseif ch and ch >= 49 and ch <= 52 then
             self:act('tab:' .. (ch - 48))
-        elseif code == 1 then
-            self:act('back')
         elseif code == 28 then
             self:act('open')
         elseif code == 200 then
@@ -3378,7 +3374,7 @@ function F:drawFluids(x, width, b)
         if editing then
             ui:control('confirm-edit', x, editTop + 5, '确认')
             ui:control('cancel-edit', x + 10, editTop + 5, '取消')
-            ui:put(x + 20, editTop + 5, 'Enter 确认 / Esc 取消', width - 20, ink.dim)
+            ui:put(x + 20, editTop + 5, 'Enter 确认', width - 20, ink.dim)
         end
     else
         ui:put(x, editTop + 2, '点击表格中的值修改配置', width, ink.dim)
@@ -3565,7 +3561,7 @@ function F:draw()
             2,
             ink.amber
         )
-        ui:control('back', 2, h, 'Esc 取消')
+        ui:control('back', 2, h, '取消')
     else
         ui:control('prev', x, b.nav, '上一页')
         ui:control('next', x + 12, b.nav, '下一页')
