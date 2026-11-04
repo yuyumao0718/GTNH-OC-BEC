@@ -711,6 +711,7 @@ function E.new(cfg, state, io, modules)
         filterNames = {},
         healthAt = {},
         collectAt = {},
+        poolSupport = {},
     }, E)
     for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
         state[key] = state[key] or {}
@@ -1080,6 +1081,36 @@ function E:beeCells(a)
     return cells
 end
 
+function E:poolSupports(a, meta)
+    if not meta.steps then
+        return true
+    end
+    local checked = self.poolSupport[meta]
+    if not checked then
+        checked = {}
+        self.poolSupport[meta] = checked
+    end
+    if checked[a.beePool] == nil then
+        local cells = self:beeCells(a)
+        local capable = true
+        for _, step in ipairs(meta.steps) do
+            local found = false
+            for tier in pairs(cells) do
+                if tier >= step.tier then
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                capable = false
+                break
+            end
+        end
+        checked[a.beePool] = capable
+    end
+    return checked[a.beePool]
+end
+
 function E:beeAccess(a, c)
     for _, box in ipairs(a.beeBoxes) do
         if box.box == c.box then
@@ -1342,18 +1373,7 @@ function E:schedule()
     local idle, eligible = {}, {}
     for _, a in ipairs(self.arrays) do
         local s = self.s.arrays[a.address]
-        local capable = true
-        for _, step in ipairs(meta.steps or {}) do
-            local found = false
-            for tier in pairs(self:beeCells(a)) do
-                if tier >= step.tier then
-                    found = true
-                end
-            end
-            if not found then
-                capable = false
-            end
-        end
+        local capable = self:poolSupports(a, meta)
         if capable and not self.errors[a.address] then
             eligible[#eligible + 1] = a
             if not s.batch and not s.bee and not s.lease then
@@ -1502,10 +1522,7 @@ function E:support(a, meta)
     for name in pairs(meta.unit) do
         assert(bands[name], '请在共享流体目标中配置 ' .. self.M.name(name))
     end
-    local cells = self:beeCells(a)
-    for _, s in ipairs(meta.steps) do
-        self.N.tier(s.tier, cells)
-    end
+    assert(self:poolSupports(a, meta), '蜂群池中没有适用于该配方的蜂群')
 end
 
 function E:bees(a, s, want)
@@ -1635,6 +1652,13 @@ function E:recover(a, s)
     if not b then
         return
     end
+    if b.phase == 'admit' then
+        for _, w in ipairs(b.workers) do
+            if not w.accepted then
+                self:worker(w).verifyRecipe = true
+            end
+        end
+    end
     if b.collection and not b.started then
         for _, w in ipairs(b.workers) do
             if w.accepted then
@@ -1745,31 +1769,40 @@ function E:array(a)
                         '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
                     )
                     assigned = assigned + count
-                    local required = n.getRequiredCondensate()
-                    local steps = self.N.steps(n.getRecipeSteps())
-                    local unit = {}
-                    for k, v in pairs(required) do
-                        unit[k] = v / count
-                    end
-                    assert(self.U.total(unit) > 0, '未读取到节点的凝聚物需求')
-                    if not meta.unit then
-                        meta.unit = unit
-                        meta.steps = steps
-                        self.save()
-                    end
-                    assert(
-                        self.U.equal(meta.unit, unit) and self.U.equal(meta.steps, steps),
-                        '节点配方与已记录的处理样板不一致'
-                    )
-                    if w.key then
-                        local own = self.s.patterns[w.key]
+                    local own = self.s.patterns[w.key or b.key]
+                    if not own.unit or cached.verifyRecipe then
+                        local required = n.getRequiredCondensate()
+                        local steps = self.N.steps(n.getRecipeSteps())
+                        local unit = {}
+                        for k, v in pairs(required) do
+                            unit[k] = v / count
+                        end
+                        assert(self.U.total(unit) > 0, '未读取到节点的凝聚物需求')
                         assert(
                             not own.unit
                                 or self.U.equal(own.unit, unit)
                                     and self.U.equal(own.steps, steps),
+                            '节点配方与已记录的处理样板不一致'
+                        )
+                        assert(
+                            not w.key
+                                or not meta.unit
+                                or self.U.equal(meta.unit, unit)
+                                    and self.U.equal(meta.steps, steps),
                             '算力奇点配方与已记录的处理样板不一致'
                         )
-                        own.unit, own.steps = unit, steps
+                        if not own.unit then
+                            own.unit, own.steps = unit, steps
+                            self.save()
+                        end
+                        cached.verifyRecipe = nil
+                    end
+                    if w.key then
+                        assert(
+                            self.U.equal(meta.unit, own.unit)
+                                and self.U.equal(meta.steps, own.steps),
+                            '算力奇点配方与已记录的处理样板不一致'
+                        )
                         w.accepted = true
                     end
                     cached.accepted = true
