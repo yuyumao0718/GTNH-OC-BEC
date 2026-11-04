@@ -121,6 +121,7 @@ end
 function E:pause()
     self.gateOutput = nil
     self.held = {}
+    self.resourceScan = nil
     pcall(self.subscribe, self, false)
     pcall(self.gate, self, self.cfg.channels[1], true)
     for _, a in ipairs(self.arrays) do
@@ -265,7 +266,7 @@ function E:channel(c)
     self:subscribe(false)
 end
 
-function E:remaining(s)
+function E:remaining(s, visit)
     local b = s.batch
     if not b or not b.granted then
         return {}
@@ -293,6 +294,9 @@ function E:remaining(s)
                 end
                 cached.full = full
             end
+            if visit then
+                visit()
+            end
         end
         if self:pulse() then
             return
@@ -317,28 +321,57 @@ function E:resources(force)
             end
         end
     end
-    if not force and self.io.time() < (self.resourcesAt or -math.huge) then
+    if
+        not self.resourceScan
+        and not force
+        and self.io.time() < (self.resourcesAt or -math.huge)
+    then
         return true
     end
-    local reserved = {}
-    for _, a in ipairs(self.arrays) do
-        local remaining = self:remaining(self.s.arrays[a.address])
-        if not remaining then
-            return false
-        end
-        self.U.add(reserved, remaining)
+    if not self.resourceScan then
+        self.resourcesFresh = false
+        self.resourceScan = coroutine.create(function()
+            local reserved = {}
+            local reads = 0
+            local function visit()
+                reads = reads + 1
+                if reads == 4 then
+                    reads = 0
+                    coroutine.yield(false)
+                end
+            end
+            for _, a in ipairs(self.arrays) do
+                local remaining = self:remaining(self.s.arrays[a.address], visit)
+                if not remaining then
+                    return false
+                end
+                self.U.add(reserved, remaining)
+            end
+            -- Publish only a complete ledger; no new grants are issued during this scan.
+            local stock = self.storage.getStoredCondensate()
+            self.stock, self.reserved = stock, reserved
+            self.free = {}
+            for k, v in pairs(self.stock) do
+                self.free[k] = math.max(0, v - (self.reserved[k] or 0))
+            end
+            assert(
+                self.U.total(self.stock) <= self.cfg.fieldLimit,
+                '凝聚物库存超过场强容量'
+            )
+            self.resourcesAt = self.io.time() + 1
+            self.resourcesFresh = true
+            return true
+        end)
     end
-    -- Read node obligations first: consumption between reads can only understate free stock.
-    local stock = self.storage.getStoredCondensate()
-    self.stock, self.reserved = stock, reserved
-    self.free = {}
-    for k, v in pairs(self.stock) do
-        self.free[k] = math.max(0, v - (self.reserved[k] or 0))
+    local ok, complete = coroutine.resume(self.resourceScan)
+    if not ok then
+        self.resourceScan = nil
+        error(complete, 0)
     end
-    assert(self.U.total(self.stock) <= self.cfg.fieldLimit, '凝聚物库存超过场强容量')
-    self.resourcesAt = self.io.time() + 1
-    self.resourcesFresh = true
-    return true
+    if coroutine.status(self.resourceScan) == 'dead' then
+        self.resourceScan = nil
+    end
+    return complete
 end
 
 function E:grant(b)
@@ -351,10 +384,9 @@ function E:grant(b)
     if not self.U.fits(self.free, b.reserve) then
         return false
     end
-    if not self.resourcesFresh then
-        if not self:resources(true) or not self.U.fits(self.free, b.reserve) then
-            return false
-        end
+    if not self.resourcesFresh or self.resourceScan then
+        self.resourcesAt = nil
+        return false
     end
     b.granted = true
     self.U.add(self.reserved, b.reserve)
@@ -810,7 +842,7 @@ function E:bees(a, s, want)
     end
     local n = self.io.proxy(a.nodes[1].address)
     local current
-    if not s.bee then
+    if not s.bee and not s.request then
         local provided = n.getProvidedTier()
         current = provided and provided.tier
         self.provided[a.address] = current
@@ -969,6 +1001,28 @@ function E:recover(a, s)
     self.save()
 end
 
+function E:intakes()
+    local pending = {}
+    for _, a in ipairs(self.arrays) do
+        local b = self.s.arrays[a.address].batch
+        if b and b.phase == 'admit' and not self.errors[a.address] then
+            for _, w in ipairs(b.workers) do
+                if not w.accepted and not self:worker(w).accepted then
+                    pending[#pending + 1] = w.address
+                end
+            end
+        end
+    end
+    self.intakeNodes = {}
+    if #pending > 0 then
+        local first = (self.intakeCursor or 0) % #pending
+        for offset = 1, math.min(4, #pending) do
+            self.intakeNodes[pending[(first + offset - 1) % #pending + 1]] = true
+        end
+        self.intakeCursor = first + math.min(4, #pending)
+    end
+end
+
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
@@ -1002,6 +1056,8 @@ function E:array(a)
             local cached = self:worker(w)
             if w.accepted or cached.accepted then
                 assigned = assigned + w.count
+            elseif not (self.intakeNodes and self.intakeNodes[w.address]) then
+                all = false
             else
                 local n = self.io.proxy(w.address)
                 if n.hasWork() then
@@ -1048,6 +1104,9 @@ function E:array(a)
                         cached.intake = true
                     end
                     all = false
+                end
+                if self:pulse() then
+                    return
                 end
             end
         end
@@ -1242,7 +1301,10 @@ function E:tick()
         end
         self.recovered = true
     end
-    if not self:resources() then
+    if not self:resources() and not self.reserved then
+        return
+    end
+    if self:pulse() then
         return
     end
     self:collections()
@@ -1258,6 +1320,7 @@ function E:tick()
     if not self.errors[self.cfg.channels[1].id] then
         self:schedule()
     end
+    self:intakes()
     for _, a in ipairs(self.arrays) do
         if not self.errors[a.address] then
             local ok, err = pcall(self.array, self, a)

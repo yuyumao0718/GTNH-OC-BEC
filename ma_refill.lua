@@ -168,6 +168,9 @@ function R:receive(f)
 end
 
 function R:tick()
+    if not self.e.reserved then
+        return
+    end
     if self.e.now < (self.scanAt or -math.huge) then
         for _, f in ipairs(self.e.cfg.feeds) do
             self:receive(f)
