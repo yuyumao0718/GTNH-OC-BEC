@@ -721,7 +721,7 @@ local phases = {
     collect = '收集算力奇点',
     wait = '准备加工',
     run = '加工中',
-    ['return'] = '回收蜂群',
+    ['return'] = '加工完成',
 }
 function E.new(cfg, state, io, modules)
     local self = setmetatable({
@@ -932,7 +932,9 @@ function E:start()
         s.counts = s.counts or {}
         s.blocked = nil
         for _, n in ipairs(a.nodes) do
-            self.io.proxy(n.address).setSpeedDivisor(1)
+            local node = self.io.proxy(n.address)
+            node.setSpeedDivisor(1)
+            node.setMinParallel(1)
         end
     end
     if self.storage.getFieldStrength() ~= self.cfg.fieldLimit then
@@ -1223,6 +1225,19 @@ function E:borrow(a, s, tier)
     self.save()
     return true
 end
+
+function E:beeWaiting(a, s)
+    for _, other in ipairs(self.cfg.arrays) do
+        if other.address ~= a.address and other.beePool == a.beePool then
+            local state = self.s.arrays[other.address]
+            local request = state and state.request
+            if request and s.lease and s.lease[request.tier] then
+                return true
+            end
+        end
+    end
+    return false
+end
 -- Only pending large orders sample fastTier nodes. Ordinary progress is already cached.
 function E:finishSample(a, deadline)
     local s = self.s.arrays[a.address]
@@ -1325,7 +1340,7 @@ function E:awaitFinishing(order, eligible)
         local busy = false
         for id in pairs(wait.targets) do
             local s = self.s.arrays[id]
-            if s.batch or s.bee or s.lease then
+            if s.batch or s.bee or s.lease and not s.reuse then
                 busy = true
             end
         end
@@ -1421,7 +1436,7 @@ function E:schedule()
         local capable = self:poolSupports(a, meta)
         if capable and not self.errors[a.address] then
             eligible[#eligible + 1] = a
-            if not s.batch and not s.bee and not s.lease then
+            if not s.batch and not s.bee and (not s.lease or s.reuse) then
                 idle[#idle + 1] = a
             end
         end
@@ -1598,6 +1613,7 @@ function E:bees(a, s, want)
                 s.lease = nil
                 s.request = nil
                 s.counts = {}
+                s.reuse = nil
                 self.save()
             end
             return true
@@ -1668,6 +1684,7 @@ function E:bees(a, s, want)
             else
                 s.lease = nil
                 s.counts = {}
+                s.reuse = nil
             end
             self.beeChecked[a.address] = { tier = current, count = count }
             s.bee = nil
@@ -1769,8 +1786,10 @@ function E:array(a)
         if not self:hold(a) then
             return
         end
-        if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
-            return
+        if not s.reuse or self.stopping or s.bee or self:beeWaiting(a, s) then
+            if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
+                return
+            end
         end
         local order = self.s.queue[1]
         self.status[a.address] = order
@@ -1787,6 +1806,11 @@ function E:array(a)
         .. b.count
     if b.phase ~= 'run' and not self:hold(a) then
         return
+    end
+    if s.reuse and (s.bee or b.collection or self:beeWaiting(a, s)) then
+        if not self:bees(a, s, nil) then
+            return
+        end
     end
     if b.phase == 'admit' then
         local all = true
@@ -1846,7 +1870,6 @@ function E:array(a)
                     cached.accepted = true
                 else
                     if not cached.intake then
-                        n.setMinParallel(1)
                         n.setMaxParallel(w.count)
                         n.setWorkAllowed(true)
                         cached.intake = true
@@ -1892,6 +1915,7 @@ function E:array(a)
             return
         end
         self:filters(a, meta.unit)
+        s.reuse = nil
         local cells = self:beeCells(a)
         if not b.fastChecked then
             local ceiling = {}
@@ -1976,8 +2000,12 @@ function E:array(a)
             end
         end
     elseif b.phase == 'return' then
-        if not self:bees(a, s, nil) then
-            return
+        if self.stopping or s.bee or self:beeWaiting(a, s) then
+            if not self:bees(a, s, nil) then
+                return
+            end
+        else
+            s.reuse = s.lease and true or nil
         end
         s.done = s.done + b.count
         s.batch = nil
@@ -3652,7 +3680,7 @@ return F
 files[#files + 1] = {
     name = 'ma_gui.lua',
     code = [=[
--- Palette, split panels and changed-row painting follow maxwell-cache/bec_ui.lua.
+-- Render cached observations; redraw only the spans touched by a change.
 local G = {}
 G.__index = G
 local ink = {
@@ -3824,20 +3852,56 @@ function G:paint()
         end
     end
     for y, row in ipairs(self.rows) do
-        local signature = {}
-        for _, s in ipairs(row) do
-            signature[#signature + 1] = table.concat(s, '\31')
-        end
-        signature = table.concat(signature, '\30')
-        if self.cache[y] ~= signature then
-            colors(ink.text, ink.bg)
-            self.gpu.set(1, y, string.rep(' ', w))
-            for _, s in ipairs(row) do
-                colors(s[3], s[4])
-                self.gpu.set(s[1], y, s[2])
+        local previous = self.cache[y]
+        local first, last = w + 1, 0
+        local function include(span)
+            if span and span[2] ~= '' then
+                first = math.min(first, span[1])
+                last = math.max(last, span[1] + self.u.wlen(span[2]) - 1)
             end
-            self.cache[y] = signature
         end
+        if not previous then
+            first, last = 1, w
+        else
+            for i = 1, math.max(#row, #previous) do
+                local a, b = row[i], previous[i]
+                if
+                    not a
+                    or not b
+                    or a[1] ~= b[1]
+                    or a[2] ~= b[2]
+                    or a[3] ~= b[3]
+                    or a[4] ~= b[4]
+                then
+                    include(a)
+                    include(b)
+                end
+            end
+        end
+        if last >= first then
+            -- Include overlapping backgrounds and whole wide characters before clearing.
+            local changed
+            repeat
+                local left, right = first, last
+                for _, spans in ipairs({ previous or {}, row }) do
+                    for _, span in ipairs(spans) do
+                        if span[1] <= last and span[1] + self.u.wlen(span[2]) > first then
+                            include(span)
+                        end
+                    end
+                end
+                changed = left ~= first or right ~= last
+            until not changed
+            colors(ink.text, ink.bg)
+            self.gpu.set(first, y, string.rep(' ', last - first + 1))
+            for _, s in ipairs(row) do
+                if s[2] ~= '' and s[1] <= last and s[1] + self.u.wlen(s[2]) > first then
+                    colors(s[3], s[4])
+                    self.gpu.set(s[1], y, s[2])
+                end
+            end
+        end
+        self.cache[y] = row
     end
     colors(0xFFFFFF, 0x000000)
 end
@@ -3914,9 +3978,9 @@ end
 local phases = {
     admit = '节点取料',
     collect = '收集算力奇点',
-    wait = '等待凝聚物或蜂群',
+    wait = '准备加工',
     run = '加工',
-    ['return'] = '回收蜂群',
+    ['return'] = '加工完成',
 }
 
 local function phase(b, s)
@@ -4286,33 +4350,29 @@ function G:arrayPanel(e, x, top, width, bottom)
     end
     local s = e.s.arrays[a.address]
     local b = s and s.batch
-    self:put(
-        x,
-        top,
-        self:recordName(e.cfg, 'arrays', a) .. '  ' .. a.address:sub(1, 12),
-        width,
-        ink.cyan
-    )
+    self:put(x, top, self:recordName(e.cfg, 'arrays', a), width, ink.cyan)
     self:button('array-', x, top + 1, '上一台')
     self:button('array+', x + 10, top + 1, '下一台')
+    local tier = (e.provided or {})[a.address]
+    local product = b
+        and (b.collection and '算力奇点合并加工' or e.s.patterns[b.key].pattern.label)
+    self:put(
+        x,
+        top + 2,
+        product and product .. ' ×' .. exact(b.count) or '等待 AE 下单',
+        width
+    )
     self:put(
         x,
         top + 3,
         e.errors[a.address] and '已暂停 / 暂停前进度'
-            or b and phase(b, s) .. ' ×' .. b.count
-            or e.status[a.address]
-            or '等待 AE 下单',
+            or (b and phase(b, s) or e.status[a.address] or '空闲')
+                .. '  |  '
+                .. (tier and '蜂群 T' .. tier or '未装载蜂群'),
         width,
         e.errors[a.address] and ink.red or ink.green
     )
-    self:put(
-        x,
-        top + 4,
-        s and s.bee and '蜂群 T' .. s.bee.tier .. (s.bee.loading and ' 装载中' or ' 回收中')
-            or '节点 / 并行 / 所需蜂群 / 进度',
-        width,
-        ink.dim
-    )
+    self:put(x, top + 4, '节点 / 并行 / 蜂群      进度 / 状态', width, ink.dim)
     local observed = (e.observations or {})[a.address]
     local views, workers = {}, {}
     for _, n in pairs(observed or {}) do
@@ -4333,17 +4393,28 @@ function G:arrayPanel(e, x, top, width, bottom)
             self:put(
                 x,
                 y,
-                '#' .. i .. '  ' .. exact(n.parallel) .. ' 并行  T' .. (n.tier or '-'),
-                width - 9
+                '#' .. i .. '  ' .. amount(n.parallel) .. ' 并行 T' .. (n.tier or '-'),
+                20
             )
-            self:put(
-                x + width - 8,
-                y,
-                n.fast and '固定蜂群'
-                    or string.format('%5.1f%%', 100 * math.min(1, n.progress / n.length)),
-                8,
-                ink.cyan
-            )
+            if n.fast then
+                self:put(
+                    x + 21,
+                    y,
+                    e.errors[a.address] and '已暂停' or '快速加工',
+                    width - 21,
+                    ink.cyan
+                )
+            else
+                local status = e.errors[a.address] and '已暂停'
+                    or not tier and '等蜂群'
+                    or n.tier and n.tier > tier and '等T' .. n.tier
+                    or '加工'
+                local color = status == '加工' and ink.cyan or ink.amber
+                local ratio = math.min(1, n.progress / n.length)
+                self:bar(x + 21, y, width - 37, ratio, color)
+                self:put(x + width - 15, y, string.format('%5.1f%%', ratio * 100), 6, color)
+                self:put(x + width - 8, y, status, 8, color)
+            end
         else
             local status = '空闲'
             if worker then

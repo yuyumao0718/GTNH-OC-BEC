@@ -9,7 +9,7 @@ local phases = {
     collect = '收集算力奇点',
     wait = '准备加工',
     run = '加工中',
-    ['return'] = '回收蜂群',
+    ['return'] = '加工完成',
 }
 function E.new(cfg, state, io, modules)
     local self = setmetatable({
@@ -220,7 +220,9 @@ function E:start()
         s.counts = s.counts or {}
         s.blocked = nil
         for _, n in ipairs(a.nodes) do
-            self.io.proxy(n.address).setSpeedDivisor(1)
+            local node = self.io.proxy(n.address)
+            node.setSpeedDivisor(1)
+            node.setMinParallel(1)
         end
     end
     if self.storage.getFieldStrength() ~= self.cfg.fieldLimit then
@@ -511,6 +513,19 @@ function E:borrow(a, s, tier)
     self.save()
     return true
 end
+
+function E:beeWaiting(a, s)
+    for _, other in ipairs(self.cfg.arrays) do
+        if other.address ~= a.address and other.beePool == a.beePool then
+            local state = self.s.arrays[other.address]
+            local request = state and state.request
+            if request and s.lease and s.lease[request.tier] then
+                return true
+            end
+        end
+    end
+    return false
+end
 -- Only pending large orders sample fastTier nodes. Ordinary progress is already cached.
 function E:finishSample(a, deadline)
     local s = self.s.arrays[a.address]
@@ -613,7 +628,7 @@ function E:awaitFinishing(order, eligible)
         local busy = false
         for id in pairs(wait.targets) do
             local s = self.s.arrays[id]
-            if s.batch or s.bee or s.lease then
+            if s.batch or s.bee or s.lease and not s.reuse then
                 busy = true
             end
         end
@@ -709,7 +724,7 @@ function E:schedule()
         local capable = self:poolSupports(a, meta)
         if capable and not self.errors[a.address] then
             eligible[#eligible + 1] = a
-            if not s.batch and not s.bee and not s.lease then
+            if not s.batch and not s.bee and (not s.lease or s.reuse) then
                 idle[#idle + 1] = a
             end
         end
@@ -886,6 +901,7 @@ function E:bees(a, s, want)
                 s.lease = nil
                 s.request = nil
                 s.counts = {}
+                s.reuse = nil
                 self.save()
             end
             return true
@@ -956,6 +972,7 @@ function E:bees(a, s, want)
             else
                 s.lease = nil
                 s.counts = {}
+                s.reuse = nil
             end
             self.beeChecked[a.address] = { tier = current, count = count }
             s.bee = nil
@@ -1057,8 +1074,10 @@ function E:array(a)
         if not self:hold(a) then
             return
         end
-        if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
-            return
+        if not s.reuse or self.stopping or s.bee or self:beeWaiting(a, s) then
+            if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
+                return
+            end
         end
         local order = self.s.queue[1]
         self.status[a.address] = order
@@ -1075,6 +1094,11 @@ function E:array(a)
         .. b.count
     if b.phase ~= 'run' and not self:hold(a) then
         return
+    end
+    if s.reuse and (s.bee or b.collection or self:beeWaiting(a, s)) then
+        if not self:bees(a, s, nil) then
+            return
+        end
     end
     if b.phase == 'admit' then
         local all = true
@@ -1134,7 +1158,6 @@ function E:array(a)
                     cached.accepted = true
                 else
                     if not cached.intake then
-                        n.setMinParallel(1)
                         n.setMaxParallel(w.count)
                         n.setWorkAllowed(true)
                         cached.intake = true
@@ -1180,6 +1203,7 @@ function E:array(a)
             return
         end
         self:filters(a, meta.unit)
+        s.reuse = nil
         local cells = self:beeCells(a)
         if not b.fastChecked then
             local ceiling = {}
@@ -1264,8 +1288,12 @@ function E:array(a)
             end
         end
     elseif b.phase == 'return' then
-        if not self:bees(a, s, nil) then
-            return
+        if self.stopping or s.bee or self:beeWaiting(a, s) then
+            if not self:bees(a, s, nil) then
+                return
+            end
+        else
+            s.reuse = s.lease and true or nil
         end
         s.done = s.done + b.count
         s.batch = nil
