@@ -11,14 +11,6 @@ local phases = {
     run = '加工中',
     ['return'] = '回收蜂群',
 }
-local nodeErrors = {
-    ['internal-error'] = '节点内部错误',
-    unpowered = '节点供电不足',
-    ['assembler-offline'] = '观测阵列未运行',
-    ['paused-immediate'] = '节点已被立即暂停',
-    ['paused-step'] = '节点已在步骤结束时暂停',
-}
-
 function E.new(cfg, state, io, modules)
     local self = setmetatable({
         cfg = cfg,
@@ -35,6 +27,8 @@ function E.new(cfg, state, io, modules)
         observations = {},
         provided = {},
         beeChecked = {},
+        held = {},
+        nodeCache = {},
         now = 0,
         settled = {},
         filterNames = {},
@@ -65,6 +59,35 @@ function E:items(address)
     return counts
 end
 
+function E:subscribe(enabled)
+    if self.subscribed ~= enabled then
+        self.io.proxy(self.cfg.channels[1].buffer).setItemEventSubscription(enabled)
+        self.subscribed = enabled
+        if enabled then
+            self.inputDirty = true
+        end
+    end
+end
+
+function E:event(name, address)
+    if
+        name == 'network_item_changed'
+        and address == self.cfg.channels[1].buffer
+        and self.subscribed
+    then
+        self.inputDirty = true
+    end
+end
+
+function E:worker(w)
+    local cached = self.nodeCache[w.address]
+    if not cached or cached.worker ~= w then
+        cached = { worker = w }
+        self.nodeCache[w.address] = cached
+    end
+    return cached
+end
+
 function E:gate(c, closed)
     local locked = self.stopping or closed
     if self.gateOutput ~= locked then
@@ -75,6 +98,7 @@ end
 
 function E:requestStop()
     self.stopping = true
+    self.inputDirty = true
     self:gate(self.cfg.channels[1], true)
 end
 
@@ -83,15 +107,21 @@ function E:pulse()
 end
 
 function E:hold(a)
+    if self.held[a.address] then
+        return true
+    end
     local p = self.io.proxy(a.address)
     if p.isWorkAllowed() then
         p.setWorkAllowed(false)
     end
-    return not p.hasWork()
+    self.held[a.address] = not p.hasWork()
+    return self.held[a.address]
 end
 
 function E:pause()
     self.gateOutput = nil
+    self.held = {}
+    pcall(self.subscribe, self, false)
     pcall(self.gate, self, self.cfg.channels[1], true)
     for _, a in ipairs(self.arrays) do
         pcall(self.hold, self, a)
@@ -119,6 +149,10 @@ function E:catalogsRead()
 end
 
 function E:check()
+    assert(
+        self.io.proxy(self.cfg.channels[1].buffer).setItemEventSubscription,
+        '公共原料子网 ME 控制器不支持物品变化事件，请检查 OC 版本'
+    )
     self:catalogsRead()
     local needed = 0
     for _, a in ipairs(self.arrays) do
@@ -185,9 +219,16 @@ end
 
 function E:channel(c)
     if self.s.admission or #self.s.queue > 0 then
+        self:subscribe(false)
         self:gate(c, true)
         return
     end
+    self:subscribe(true)
+    if not self.inputDirty and self.now < (self.inputAt or 0) then
+        return
+    end
+    self.inputDirty = false
+    self.inputAt = self.now + 10
     local counts = self:items(c.buffer)
     if not next(counts) then
         self.settled[c.id] = nil
@@ -198,9 +239,11 @@ function E:channel(c)
     self:gate(c, true)
     if not self.settled[c.id] then
         self.settled[c.id] = self.now
+        self.inputAt = self.now + 0.25
         return
     end
     if self.now - self.settled[c.id] < 0.25 then
+        self.inputAt = self.settled[c.id] + 0.25
         return
     end
     local p = self.I.identify(self.catalogs[c.id], counts)
@@ -219,6 +262,7 @@ function E:channel(c)
     self.s.nextId = self.s.nextId + 1
     self.settled[c.id] = nil
     self.save()
+    self:subscribe(false)
 end
 
 function E:remaining(s)
@@ -235,16 +279,19 @@ function E:remaining(s)
     local result = {}
     local unit = self.s.patterns[b.key].unit
     for _, w in ipairs(b.workers) do
-        local n = self.io.proxy(w.address)
-        if n.hasWork() then
-            local consumed = n.getConsumedCondensate()
+        local cached = self:worker(w)
+        if not cached.done and not cached.full then
+            local consumed = self.io.proxy(w.address).getConsumedCondensate()
             -- Completion can clear the recipe during the callback.
             if consumed then
+                local full = true
                 for k, v in pairs(unit) do
                     local left = v * w.count - (consumed[k] or 0)
                     assert(left >= 0, '节点报告的凝聚物消耗量超过配方需求')
                     result[k] = (result[k] or 0) + left
+                    full = full and left == 0
                 end
+                cached.full = full
             end
         end
         if self:pulse() then
@@ -410,7 +457,7 @@ function E:finishSample(a, deadline)
                 return
             end
             local n = self.io.proxy(w.address)
-            if n.hasWork() then
+            if not self:worker(w).done and n.hasWork() then
                 local progress = n.getWorkProgress()
                 if progress < last.start then
                     return
@@ -702,20 +749,21 @@ function E:admissionTick()
 end
 
 function E:filters(a, unit)
-    local d = self.io.proxy(a.diode)
-    assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
     local names = self.U.keys(unit)
     if #names == 0 then
         names = { 'water' }
     end
-    assert(#names <= d.getCondensateFilterCount(), '麦克斯韦门过滤槽不足')
     if self.filterNames[a.address] and self.U.equal(self.filterNames[a.address], names) then
         return
     end
-    for i = 1, d.getCondensateFilterCount() do
+    local d = self.io.proxy(a.diode)
+    assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
+    local slots = d.getCondensateFilterCount()
+    assert(#names <= slots, '麦克斯韦门过滤槽不足')
+    for i = 1, slots do
         d.setCondensateFilterAt(i, names[i])
     end
-    for i = 1, d.getCondensateFilterCount() do
+    for i = 1, slots do
         assert(
             d.getCondensateFilterAt(i) == names[i],
             '麦克斯韦门过滤器被覆盖，请移除普通流体仓'
@@ -730,15 +778,6 @@ function E:health(a)
     end
     local d = self.io.proxy(a.diode)
     assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
-    local names = self.filterNames[a.address]
-    if names then
-        for i = 1, d.getCondensateFilterCount() do
-            assert(
-                d.getCondensateFilterAt(i) == names[i],
-                '麦克斯韦门过滤器被覆盖，请移除普通流体仓'
-            )
-        end
-    end
     self.healthAt[a.address] = self.now
 end
 
@@ -762,7 +801,7 @@ end
 
 function E:bees(a, s, want)
     local checked = self.beeChecked[a.address]
-    if not s.bee and checked and self.now - checked.at < 10 and checked.tier == want then
+    if not s.bee and checked and checked.tier == want then
         if want and checked.count > 0 then
             return true
         elseif not want and checked.count == 0 and not s.lease and not s.request then
@@ -778,7 +817,7 @@ function E:bees(a, s, want)
     end
     if not s.bee and current == want then
         local count = n.getAvailableNanites()
-        self.beeChecked[a.address] = { tier = current, count = count, at = self.io.time() }
+        self.beeChecked[a.address] = { tier = current, count = count }
         if not want then
             if count ~= 0 then
                 return false
@@ -794,9 +833,6 @@ function E:bees(a, s, want)
         if count > 0 then
             return true
         end
-    end
-    if not self:hold(a) then
-        return false
     end
     if not s.bee then
         if not current then
@@ -868,7 +904,7 @@ function E:bees(a, s, want)
                 s.lease = nil
                 s.counts = {}
             end
-            self.beeChecked[a.address] = { tier = current, count = count, at = self.io.time() }
+            self.beeChecked[a.address] = { tier = current, count = count }
             s.bee = nil
             self.save()
         elseif b.loading and count == 0 then
@@ -941,10 +977,12 @@ function E:array(a)
         self.observations[a.address] = nil
     end
     if not b then
+        if not self:hold(a) then
+            return
+        end
         if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
             return
         end
-        self:hold(a)
         self.status[a.address] = s.blocked or '空闲'
         return
     end
@@ -961,7 +999,8 @@ function E:array(a)
         local all = true
         local assigned = 0
         for _, w in ipairs(b.workers) do
-            if b.collection and w.accepted then
+            local cached = self:worker(w)
+            if w.accepted or cached.accepted then
                 assigned = assigned + w.count
             else
                 local n = self.io.proxy(w.address)
@@ -1000,10 +1039,14 @@ function E:array(a)
                         own.unit, own.steps = unit, steps
                         w.accepted = true
                     end
+                    cached.accepted = true
                 else
-                    n.setMinParallel(1)
-                    n.setMaxParallel(w.count)
-                    n.setWorkAllowed(true)
+                    if not cached.intake then
+                        n.setMinParallel(1)
+                        n.setMaxParallel(w.count)
+                        n.setWorkAllowed(true)
+                        cached.intake = true
+                    end
                     all = false
                 end
             end
@@ -1069,6 +1112,7 @@ function E:array(a)
                 self.io.proxy(w.address).setWorkAllowed(false)
             end
             self.io.proxy(a.address).setWorkAllowed(true)
+            self.held[a.address] = nil
         end
     elseif b.phase == 'run' then
         if s.bee then
@@ -1079,7 +1123,8 @@ function E:array(a)
         local views = {}
         for index, w in ipairs(b.workers) do
             local n = self.io.proxy(w.address)
-            if n.hasWork() then
+            local cached = self:worker(w)
+            if not cached.done and n.hasWork() then
                 local progress = b.fixed and 0 or n.getWorkProgress()
                 local tier = b.fixed or self.N.requested(meta.steps, progress)
                 if b.fixed or n.hasWork() then
@@ -1093,32 +1138,17 @@ function E:array(a)
                         length = meta.steps[#meta.steps].finish,
                         fast = b.fixed ~= nil,
                     }
+                else
+                    cached.done = true
                 end
+            else
+                cached.done = true
             end
             if self:pulse() then
                 return
             end
         end
         self.observations[a.address] = views
-        self.nodeHealth = self.nodeHealth or {}
-        local health = self.nodeHealth[a.address] or { at = self.now, index = 1 }
-        self.nodeHealth[a.address] = health
-        if #workers > 0 and self.now - health.at >= 10 / #b.workers then
-            health.index = (health.index - 1) % #workers + 1
-            local worker = workers[health.index]
-            local n = self.io.proxy(worker.address)
-            local state = n.getState()
-            local held = not self.io.proxy(a.address).isWorkAllowed()
-            assert(
-                not nodeErrors[state] or state == 'assembler-offline' and held,
-                (nodeErrors[state] or state)
-                    .. '：'
-                    .. worker.address
-                    .. '；请检查机器状态后重新运行程序'
-            )
-            health.at = self.now
-            health.index = health.index + 1
-        end
         if #workers == 0 then
             for _, w in ipairs(b.workers) do
                 self.io.proxy(w.address).setWorkAllowed(false)
@@ -1136,15 +1166,10 @@ function E:array(a)
         if ref then
             b.reference = ref.progress
             local tier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
-            if self:bees(a, s, tier) then
-                local assembler = self.io.proxy(a.address)
-                if not assembler.isWorkAllowed() then
-                    if not self:hold(a) then
-                        return
-                    end
-                    self:filters(a, meta.unit)
-                    assembler.setWorkAllowed(true)
-                end
+            if self:bees(a, s, tier) and self.held[a.address] then
+                self:filters(a, meta.unit)
+                self.io.proxy(a.address).setWorkAllowed(true)
+                self.held[a.address] = nil
             end
         end
     elseif b.phase == 'return' then
@@ -1193,10 +1218,6 @@ function E:tick()
     self.resourcesFresh = false
     if self.now - (self.fieldHealthAt or -math.huge) >= 10 then
         assert(self.storage.isWorkAllowed() and self.storage.hasWork(), '约束场未运行')
-        assert(
-            self.storage.getFieldStrength() == self.cfg.fieldLimit,
-            '场强与配置不一致，请检查是否被手动修改'
-        )
         self.fieldHealthAt = self.now
     end
     if not self.ready then
@@ -1242,6 +1263,7 @@ function E:tick()
             local ok, err = pcall(self.array, self, a)
             if not ok then
                 self.errors[a.address] = err
+                self.held[a.address] = nil
                 self:hold(a)
                 for _, n in ipairs(a.nodes) do
                     self.io.proxy(n.address).setWorkAllowed(false)

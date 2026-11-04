@@ -151,6 +151,7 @@ local ok, err = xpcall(function()
         local function input(timeout)
             local ev = table.pack(event.pull(timeout))
             while ev[1] do
+                engine:event(ev[1], ev[2])
                 local action = screen():runtimeEvent(table.unpack(ev, 1, ev.n))
                 if action == 'interrupt' then
                     editing = false

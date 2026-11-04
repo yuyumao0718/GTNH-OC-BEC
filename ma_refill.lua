@@ -49,10 +49,17 @@ end
 
 function R:generators(feed)
     local e = self.e
+    if not feed and e.now < (self.generatorAt or -math.huge) then
+        return
+    end
+    if not feed then
+        self.generatorAt = e.io.time() + 5
+    end
     for _, g in ipairs(e.cfg.generators) do
         if not feed or g.feed == feed then
             local p = e.io.proxy(g.address)
-            local busy, progress = p.hasWork(), p.getWorkProgress()
+            local busy = p.hasWork()
+            local progress = busy and p.getWorkProgress() or 0
             local s = self.s.generators[g.address] or { epoch = 0 }
             self.s.generators[g.address] = s
             if s.busy and (not busy or progress < s.progress) then
