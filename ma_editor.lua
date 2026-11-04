@@ -1411,7 +1411,7 @@ function F:draw()
     self.perPage = math.max(1, math.floor((h - 13) / stride))
     if self.popup then
         local p = self.popup
-        local step = p.options[1] and p.options[1].detail and 2 or 1
+        local step = p.clearRecipes and 3 or (p.options[1] and p.options[1].detail and 2 or 1)
         local per = math.floor((h - 15) / step)
         self.optionPages = math.max(1, math.ceil(#p.options / per))
         p.page = math.min(p.page, self.optionPages)
@@ -1428,8 +1428,15 @@ function F:draw()
                 p.current == v.value,
                 width
             )
-            if step == 2 then
-                ui:put(x, y + 1, v.detail or '', width, ink.dim)
+            if step >= 2 then
+                local indent = p.clearRecipes and 4 or 0
+                ui:put(
+                    x + indent,
+                    y + 1,
+                    v.detail or '',
+                    width - indent,
+                    p.clearRecipes and 0x999999 or ink.dim
+                )
             end
         end
         if #p.options == 0 then
@@ -1441,7 +1448,9 @@ function F:draw()
         if p.all then
             ui:control('all', x + 14, b.status, '全选未分配')
         end
-        ui:control('back', x + 34, b.status, '返回')
+        if not p.clearRecipes then
+            ui:control('back', x + 34, b.status, '返回')
+        end
     elseif o and o.kind == 'box' then
         self:drawBox(o, x, width)
     elseif o and o.kind == 'fluids' then
@@ -1497,7 +1506,6 @@ function F:draw()
             2,
             ink.amber
         )
-        ui:control('back', 2, h, '取消')
     else
         ui:control('prev', x, b.nav, '上一页')
         ui:control('next', x + 12, b.nav, '下一页')
