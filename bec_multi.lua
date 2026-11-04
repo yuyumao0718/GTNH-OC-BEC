@@ -171,7 +171,7 @@ local ok, err = xpcall(function()
         end
         local function draw()
             local now = computer.uptime()
-            if now - lastDraw >= 0.5 then
+            if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end

@@ -180,7 +180,7 @@ local ok, err = xpcall(function()
         end
         local function draw()
             local now = computer.uptime()
-            if now - lastDraw >= 0.5 then
+            if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
@@ -674,7 +674,7 @@ return C
 files[#files + 1] = {
     name = 'ma_core.lua',
     code = [=[
--- Each array advances one small step per tick; all durable state contains plain tables.
+-- Arrays yield while hardware is pending; all durable state contains plain tables.
 local E = {}
 E.__index = E
 local function cellKey(c)
@@ -1446,9 +1446,12 @@ function E:bees(a, s, want)
         end
     end
     local n = self.io.proxy(a.nodes[1].address)
-    local provided = n.getProvidedTier()
-    local current = provided and provided.tier
-    self.provided[a.address] = current
+    local current
+    if not s.bee then
+        local provided = n.getProvidedTier()
+        current = provided and provided.tier
+        self.provided[a.address] = current
+    end
     if not s.bee and current == want then
         local count = n.getAvailableNanites()
         self.beeChecked[a.address] = { tier = current, count = count, at = self.io.time() }
@@ -1499,21 +1502,39 @@ function E:bees(a, s, want)
     local owner = 'bee:' .. a.address
     self.status[a.address] = (b.loading and '装载 T' or '回收 T') .. b.tier .. ' 蜂群'
     if b.phase == 'out' then
-        if self.log:step(owner, box.inventory, port, slot, 1, true) then
-            b.phase = 'io'
-            self.log:finish(owner)
+        if not self.log:step(owner, box.inventory, port, slot, 1, true) then
+            return false
         end
-    elseif b.phase == 'io' then
-        if self.log:stack(port, 7) then
-            b.phase = 'back'
-            self.save()
+        b.phase = 'io'
+        self.log:finish(owner)
+        if self:pulse() then
+            return false
         end
-    elseif b.phase == 'back' then
-        if self.log:step(owner, port, box.inventory, 7, slot) then
-            b.phase = 'sync'
-            self.log:finish(owner)
+    end
+    if b.phase == 'io' then
+        if not self.log:stack(port, 7) then
+            return false
         end
-    elseif b.phase == 'sync' then
+        b.phase = 'back'
+        self.save()
+        if self:pulse() then
+            return false
+        end
+    end
+    if b.phase == 'back' then
+        if not self.log:step(owner, port, box.inventory, 7, slot) then
+            return false
+        end
+        b.phase = 'sync'
+        self.log:finish(owner)
+        if self:pulse() then
+            return false
+        end
+    end
+    if b.phase == 'sync' then
+        local provided = n.getProvidedTier()
+        current = provided and provided.tier
+        self.provided[a.address] = current
         local count = n.getAvailableNanites()
         if b.loading and current == b.tier and count > 0 or not b.loading and count == 0 then
             if b.loading then
