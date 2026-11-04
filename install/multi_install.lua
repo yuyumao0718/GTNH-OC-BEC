@@ -15,6 +15,15 @@ local shell = require('shell')
 local serialization = require('serialization')
 local unicode = require('unicode')
 local term = require('term')
+local pendingInput = {}
+local function pull(timeout)
+    if #pendingInput > 0 then
+        local ev = table.remove(pendingInput, 1)
+        return table.unpack(ev, 1, ev.n)
+    end
+    return event.pull(timeout)
+end
+local lastYield = computer.realTime()
 local base = fs.path(assert(shell.resolve('bec_multi.lua')))
 local function load(name)
     return dofile(base .. name .. '.lua')
@@ -24,7 +33,16 @@ local modules =
     { U = U, I = load('ma_intake'), N = load('ma_nanites'), M = M, Log = load('ma_logistics') }
 local Core, Refill = load('ma_core'), load('ma_refill')
 local Recovery = load('ma_recovery')
-local store = load('ma_store').new(base, fs, serialization)
+local store = load('ma_store').new(base, fs, serialization, function()
+    if computer.realTime() - lastYield >= 0.05 then
+        -- Finish the snapshot before handling input or changing runtime state.
+        local ev = table.pack(event.pull(0))
+        if ev[1] then
+            pendingInput[#pendingInput + 1] = ev
+        end
+        lastYield = computer.realTime()
+    end
+end)
 local args = { ... }
 local command = args[1] or 'help'
 if command ~= 'setup' and command ~= 'check' and command ~= 'run' and command ~= 'recover' then
@@ -41,7 +59,7 @@ end
 local gui, engine
 local function screen()
     if not gui then
-        gui = load('ma_gui').new(component.gpu, event, unicode, C, M)
+        gui = load('ma_gui').new(component.gpu, { pull = pull }, unicode, C, M)
         gui.Editor = load('ma_editor')
     end
     return gui
@@ -131,7 +149,7 @@ local ok, err = xpcall(function()
                     end
                 end
                 if not held then
-                    local ev = event.pull(0.05)
+                    local ev = pull(0.05)
                     assert(ev ~= 'interrupted', '接管已取消，机器保持暂停')
                 end
             until held
@@ -165,7 +183,7 @@ local ok, err = xpcall(function()
         local stopping = false
         local interrupted = false
         local function input(timeout)
-            local ev = table.pack(event.pull(timeout))
+            local ev = table.pack(pull(timeout))
             while ev[1] do
                 engine:event(ev[1], ev[2])
                 local action = screen():runtimeEvent(table.unpack(ev, 1, ev.n))
@@ -182,19 +200,19 @@ local ok, err = xpcall(function()
                 elseif action == 'redraw' then
                     lastDraw = -math.huge
                 end
-                ev = table.pack(event.pull(0))
+                ev = table.pack(pull(0))
             end
             return false
         end
         local function draw()
-            local now = computer.uptime()
+            local now = computer.realTime()
             if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
         end
         screen():runtime(engine, refill)
-        lastDraw = computer.uptime()
+        lastDraw = computer.realTime()
         interrupted = screen():discardInput()
         engine.io.pulse = function()
             interrupted = interrupted or input(0)
@@ -218,7 +236,9 @@ local ok, err = xpcall(function()
             end
             local now = computer.uptime()
             if now - lastSave >= 5 then
-                engine.save()
+                if engine.dirty then
+                    engine.save()
+                end
                 lastSave = now
             end
             if stopping and engine:drain() then
@@ -241,13 +261,17 @@ local ok, err = xpcall(function()
         configure()
     until false
 end, debug.traceback)
+local paused, pauseErr = true
 if engine and command ~= 'check' then
-    engine:pause()
+    paused, pauseErr = pcall(engine.pause, engine)
 end
 term.clear()
 if not ok then
     io.stderr:write(M.text(err) .. '\n')
-elseif command == 'run' then
+end
+if not paused then
+    io.stderr:write('暂停或保存失败：' .. M.text(pauseErr) .. '\n')
+elseif ok and command == 'run' then
     print('已停止。再次运行 bec_multi.lua run 可继续接单或恢复未完成配方。')
 end
 ]=],
@@ -716,6 +740,7 @@ function E.new(cfg, state, io, modules)
         now = 0,
         settled = {},
         filterNames = {},
+        filterSlots = {},
         healthAt = {},
         collectAt = {},
         poolSupport = {},
@@ -725,7 +750,10 @@ function E.new(cfg, state, io, modules)
     end
     state.nextId = state.nextId or 1
     self.save = function()
+        self.saveFailed = true
         io.save(state)
+        self.saveFailed = nil
+        self.dirty = nil
     end
     self.log = modules.Log.new(cfg, state, io.proxy, self.save, self.U)
     self.pools = self.U.index(cfg.beePools)
@@ -812,10 +840,14 @@ function E:pause()
     for _, a in ipairs(self.arrays) do
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
-            pcall(self.io.proxy(n.address).setWorkAllowed, false)
+            pcall(function()
+                self.io.proxy(n.address).setWorkAllowed(false)
+            end)
         end
     end
-    self.save()
+    if not self.saveFailed then
+        self.save()
+    end
 end
 
 function E:catalogsRead()
@@ -1147,10 +1179,10 @@ function E:borrow(a, s, tier)
     if s.lease then
         return s.lease[tier] ~= nil
     end
-    if not s.request or s.request.tier ~= tier then
+    local requested = not s.request or s.request.tier ~= tier
+    if requested then
         s.request = { tier = tier, id = self.s.nextId }
         self.s.nextId = self.s.nextId + 1
-        self.save()
     end
     local used, earlier = {}, 0
     for _, other in ipairs(self.cfg.arrays) do
@@ -1179,6 +1211,9 @@ function E:borrow(a, s, tier)
     s.request.supply = #free == 0 and missing or nil
     local c = free[earlier + 1]
     if not c then
+        if requested then
+            self.save()
+        end
         return false
     end
     self:beeCount(a, c)
@@ -1311,7 +1346,11 @@ function E:collections()
         local b = self.s.arrays[a.address].batch
         if b and b.phase == 'collect' then
             local c = b.collection
-            c.elapsed = c.elapsed + math.max(0, self.now - (self.collectAt[a.address] or self.now))
+            local elapsed = math.max(0, self.now - (self.collectAt[a.address] or self.now))
+            c.elapsed = c.elapsed + elapsed
+            if elapsed > 0 then
+                self.dirty = true
+            end
             self.collectAt[a.address] = self.now
             if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
@@ -1494,10 +1533,18 @@ function E:filters(a, unit)
     end
     local d = self.io.proxy(a.diode)
     assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
-    local slots = d.getCondensateFilterCount()
+    local slots = self.filterSlots[a.address] or d.getCondensateFilterCount()
+    self.filterSlots[a.address] = slots
     assert(#names <= slots, '麦克斯韦门过滤槽不足')
+    local before = self.filterNames[a.address]
     for i = 1, slots do
-        d.setCondensateFilterAt(i, names[i])
+        local previous = before and before[i]
+        if not before then
+            previous = d.getCondensateFilterAt(i)
+        end
+        if previous ~= names[i] then
+            d.setCondensateFilterAt(i, names[i])
+        end
     end
     for i = 1, slots do
         assert(
@@ -1585,7 +1632,6 @@ function E:bees(a, s, want)
         assert(s.lease and s.lease[tier], '阵列内的蜂群没有借用记录')
         self.beeChecked[a.address] = nil
         s.bee = { tier = tier, loading = not current, phase = 'out' }
-        self.save()
     end
     local b = s.bee
     local cell = s.lease[b.tier]
@@ -1609,7 +1655,6 @@ function E:bees(a, s, want)
             return false
         end
         b.phase = 'back'
-        self.save()
         if self:pulse() then
             return false
         end
@@ -1884,9 +1929,6 @@ function E:array(a)
             b.phase = 'run'
             b.started = true
             self.save()
-            for _, w in ipairs(b.workers) do
-                self.io.proxy(w.address).setWorkAllowed(false)
-            end
             self.io.proxy(a.address).setWorkAllowed(true)
             self.held[a.address] = nil
         end
@@ -1926,9 +1968,6 @@ function E:array(a)
         end
         self.observations[a.address] = views
         if #workers == 0 then
-            for _, w in ipairs(b.workers) do
-                self.io.proxy(w.address).setWorkAllowed(false)
-            end
             if not self:hold(a) then
                 return
             end
@@ -2029,6 +2068,9 @@ function E:tick()
         if not self.errors[c.id] then
             local ok, err = pcall(self.channel, self, c)
             if not ok then
+                if self.saveFailed then
+                    error(err, 0)
+                end
                 self.errors[c.id] = err
                 self:gate(c, true)
             end
@@ -2042,6 +2084,9 @@ function E:tick()
         if not self.errors[a.address] then
             local ok, err = pcall(self.array, self, a)
             if not ok then
+                if self.saveFailed then
+                    error(err, 0)
+                end
                 self.errors[a.address] = err
                 self.held[a.address] = nil
                 self:hold(a)
@@ -4616,7 +4661,6 @@ function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
         locks = locks,
         ioSink = ioSink,
     }
-    self.save()
     return true
 end
 
@@ -4651,7 +4695,6 @@ function L:tick(owner)
     end
     m.intent = nil
     m.done = true
-    self.save()
     return m.done
 end
 
@@ -5096,7 +5139,8 @@ files[#files + 1] = {
 local R = {}
 R.__index = R
 function R.new(engine)
-    local self = setmetatable({ e = engine, materials = {}, bands = {}, detail = {} }, R)
+    local self =
+        setmetatable({ e = engine, materials = {}, bands = {}, detail = {}, returns = {} }, R)
     local e = engine
     e.s.refill = e.s.refill or { feeds = {}, generators = {}, active = {} }
     self.s = e.s.refill
@@ -5159,6 +5203,9 @@ function R:generators(feed)
             if s.busy and (not busy or progress < s.progress) then
                 s.epoch = s.epoch + 1
             end
+            if s.busy ~= busy or s.progress ~= progress then
+                e.dirty = true
+            end
             s.busy, s.progress = busy, progress
             self.enabled = self.enabled or {}
             if not feed and not self.enabled[g.address] then
@@ -5194,6 +5241,7 @@ function R:observe(f)
                 if amount >= m.unit or busy then
                     pending = { amount = busy and capacity or amount }
                     s.pending[i] = pending
+                    e.dirty = true
                 end
             end
             if pending then
@@ -5207,9 +5255,11 @@ function R:observe(f)
                     end
                     if done then
                         s.pending[i] = nil
+                        e.dirty = true
                     end
                 elseif amount < m.unit then
                     pending.finish = {}
+                    e.dirty = true
                     for _, g in ipairs(e.cfg.generators) do
                         if g.feed == f.id then
                             local gs = self.s.generators[g.address]
@@ -5221,10 +5271,14 @@ function R:observe(f)
                 end
             elseif amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
+                e.dirty = true
             end
         end
     end
-    s.initialized = true
+    if not s.initialized then
+        s.initialized = true
+        e.dirty = true
+    end
 end
 
 function R:receive(f)
@@ -5242,11 +5296,22 @@ function R:receive(f)
             e.log:finish(owner)
         end
     elseif task.phase == 'io' then
+        local wait = self.returns[f.id]
+        if not wait or wait.task ~= task then
+            wait = { task = task, since = e.now }
+            self.returns[f.id] = wait
+        end
+        if e.now < (wait.nextAt or -math.huge) then
+            return
+        end
         local stack = e.log:stack(f.io, 7)
         if stack then
+            self.returns[f.id] = nil
             task.amount = self:cell(c, stack)
             task.phase = 'back'
             e.save()
+        elseif e.now - wait.since >= 30 then
+            wait.nextAt = e.now + 1
         end
     elseif task.phase == 'back' then
         if e.log:step(owner, f.io, c.inventory, 7, c.slot) then
@@ -5313,11 +5378,15 @@ function R:scan()
     for _, b in ipairs(e.cfg.bands) do
         local m = self.materials[b.material]
         local free = (e.stock[m.condensate] or 0) - (e.reserved[m.condensate] or 0)
+        local wasActive = self.s.active[b.material]
         if free <= b.low or free < (e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = true
         end
         if free >= math.max(b.high, e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = false
+        end
+        if wasActive ~= self.s.active[b.material] then
+            e.dirty = true
         end
     end
     for _, f in ipairs(e.cfg.feeds) do
@@ -5373,7 +5442,7 @@ files[#files + 1] = {
     code = [=[
 -- A rename commits a complete serialized snapshot on the same OpenOS filesystem.
 local S = {}
-function S.new(base, fs, serialization)
+function S.new(base, fs, serialization, yield)
     local self = {}
     function self.read(name)
         local f = io.open(base .. name, 'r')
@@ -5387,9 +5456,66 @@ function S.new(base, fs, serialization)
     function self.write(name, value)
         local path = base .. name
         local f = assert(io.open(path .. '.tmp', 'w'))
-        assert(f:write(serialization.serialize(value)))
-        assert(f:flush())
-        f:close()
+        local buffer, bytes, seen = {}, 0, {}
+        local function flush()
+            if #buffer > 0 then
+                assert(f:write(table.concat(buffer)))
+                buffer, bytes = {}, 0
+            end
+            if yield then
+                yield()
+            end
+        end
+        local function put(text)
+            buffer[#buffer + 1] = text
+            bytes = bytes + #text
+            if bytes >= 4096 or #buffer >= 256 then
+                flush()
+            end
+        end
+        local function encode(v)
+            if type(v) == 'table' then
+                assert(not seen[v], '不能保存包含循环引用的状态')
+                seen[v] = true
+                put('{')
+                local index = 1
+                for k, item in pairs(v) do
+                    if k == index then
+                        index = index + 1
+                    else
+                        put('[')
+                        encode(k)
+                        put(']=')
+                    end
+                    encode(item)
+                    put(',')
+                end
+                put('}')
+                seen[v] = nil
+            elseif type(v) == 'string' then
+                put('"')
+                -- Short chunks avoid OC's expensive long-string pattern implementation.
+                for i = 1, #v, 128 do
+                    put((v:sub(i, i + 127):gsub('[%z\1-\31\\"]', function(c)
+                        return string.format('\\%03d', c:byte())
+                    end)))
+                end
+                put('"')
+            elseif type(v) == 'number' and v == v and math.abs(v) < math.huge then
+                put(string.format('%.17g', v))
+            else
+                put(serialization.serialize(v))
+            end
+        end
+        local ok, err = pcall(function()
+            encode(value)
+            flush()
+            assert(f:flush())
+        end)
+        local closed, closeErr = f:close()
+        assert(ok, err)
+        -- OpenOS close succeeds without returning a value.
+        assert(closed ~= false and closeErr == nil, closeErr)
         assert(fs.rename(path .. '.tmp', path), '无法保存 ' .. name)
     end
     function self.clearRecipes()

@@ -32,6 +32,7 @@ function E.new(cfg, state, io, modules)
         now = 0,
         settled = {},
         filterNames = {},
+        filterSlots = {},
         healthAt = {},
         collectAt = {},
         poolSupport = {},
@@ -41,7 +42,10 @@ function E.new(cfg, state, io, modules)
     end
     state.nextId = state.nextId or 1
     self.save = function()
+        self.saveFailed = true
         io.save(state)
+        self.saveFailed = nil
+        self.dirty = nil
     end
     self.log = modules.Log.new(cfg, state, io.proxy, self.save, self.U)
     self.pools = self.U.index(cfg.beePools)
@@ -128,10 +132,14 @@ function E:pause()
     for _, a in ipairs(self.arrays) do
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
-            pcall(self.io.proxy(n.address).setWorkAllowed, false)
+            pcall(function()
+                self.io.proxy(n.address).setWorkAllowed(false)
+            end)
         end
     end
-    self.save()
+    if not self.saveFailed then
+        self.save()
+    end
 end
 
 function E:catalogsRead()
@@ -463,10 +471,10 @@ function E:borrow(a, s, tier)
     if s.lease then
         return s.lease[tier] ~= nil
     end
-    if not s.request or s.request.tier ~= tier then
+    local requested = not s.request or s.request.tier ~= tier
+    if requested then
         s.request = { tier = tier, id = self.s.nextId }
         self.s.nextId = self.s.nextId + 1
-        self.save()
     end
     local used, earlier = {}, 0
     for _, other in ipairs(self.cfg.arrays) do
@@ -495,6 +503,9 @@ function E:borrow(a, s, tier)
     s.request.supply = #free == 0 and missing or nil
     local c = free[earlier + 1]
     if not c then
+        if requested then
+            self.save()
+        end
         return false
     end
     self:beeCount(a, c)
@@ -627,7 +638,11 @@ function E:collections()
         local b = self.s.arrays[a.address].batch
         if b and b.phase == 'collect' then
             local c = b.collection
-            c.elapsed = c.elapsed + math.max(0, self.now - (self.collectAt[a.address] or self.now))
+            local elapsed = math.max(0, self.now - (self.collectAt[a.address] or self.now))
+            c.elapsed = c.elapsed + elapsed
+            if elapsed > 0 then
+                self.dirty = true
+            end
             self.collectAt[a.address] = self.now
             if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
@@ -810,10 +825,18 @@ function E:filters(a, unit)
     end
     local d = self.io.proxy(a.diode)
     assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
-    local slots = d.getCondensateFilterCount()
+    local slots = self.filterSlots[a.address] or d.getCondensateFilterCount()
+    self.filterSlots[a.address] = slots
     assert(#names <= slots, '麦克斯韦门过滤槽不足')
+    local before = self.filterNames[a.address]
     for i = 1, slots do
-        d.setCondensateFilterAt(i, names[i])
+        local previous = before and before[i]
+        if not before then
+            previous = d.getCondensateFilterAt(i)
+        end
+        if previous ~= names[i] then
+            d.setCondensateFilterAt(i, names[i])
+        end
     end
     for i = 1, slots do
         assert(
@@ -901,7 +924,6 @@ function E:bees(a, s, want)
         assert(s.lease and s.lease[tier], '阵列内的蜂群没有借用记录')
         self.beeChecked[a.address] = nil
         s.bee = { tier = tier, loading = not current, phase = 'out' }
-        self.save()
     end
     local b = s.bee
     local cell = s.lease[b.tier]
@@ -925,7 +947,6 @@ function E:bees(a, s, want)
             return false
         end
         b.phase = 'back'
-        self.save()
         if self:pulse() then
             return false
         end
@@ -1200,9 +1221,6 @@ function E:array(a)
             b.phase = 'run'
             b.started = true
             self.save()
-            for _, w in ipairs(b.workers) do
-                self.io.proxy(w.address).setWorkAllowed(false)
-            end
             self.io.proxy(a.address).setWorkAllowed(true)
             self.held[a.address] = nil
         end
@@ -1242,9 +1260,6 @@ function E:array(a)
         end
         self.observations[a.address] = views
         if #workers == 0 then
-            for _, w in ipairs(b.workers) do
-                self.io.proxy(w.address).setWorkAllowed(false)
-            end
             if not self:hold(a) then
                 return
             end
@@ -1345,6 +1360,9 @@ function E:tick()
         if not self.errors[c.id] then
             local ok, err = pcall(self.channel, self, c)
             if not ok then
+                if self.saveFailed then
+                    error(err, 0)
+                end
                 self.errors[c.id] = err
                 self:gate(c, true)
             end
@@ -1358,6 +1376,9 @@ function E:tick()
         if not self.errors[a.address] then
             local ok, err = pcall(self.array, self, a)
             if not ok then
+                if self.saveFailed then
+                    error(err, 0)
+                end
                 self.errors[a.address] = err
                 self.held[a.address] = nil
                 self:hold(a)

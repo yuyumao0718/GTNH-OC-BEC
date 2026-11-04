@@ -63,7 +63,6 @@ function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
         locks = locks,
         ioSink = ioSink,
     }
-    self.save()
     return true
 end
 
@@ -98,7 +97,6 @@ function L:tick(owner)
     end
     m.intent = nil
     m.done = true
-    self.save()
     return m.done
 end
 

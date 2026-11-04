@@ -6,6 +6,15 @@ local shell = require('shell')
 local serialization = require('serialization')
 local unicode = require('unicode')
 local term = require('term')
+local pendingInput = {}
+local function pull(timeout)
+    if #pendingInput > 0 then
+        local ev = table.remove(pendingInput, 1)
+        return table.unpack(ev, 1, ev.n)
+    end
+    return event.pull(timeout)
+end
+local lastYield = computer.realTime()
 local base = fs.path(assert(shell.resolve('bec_multi.lua')))
 local function load(name)
     return dofile(base .. name .. '.lua')
@@ -15,7 +24,16 @@ local modules =
     { U = U, I = load('ma_intake'), N = load('ma_nanites'), M = M, Log = load('ma_logistics') }
 local Core, Refill = load('ma_core'), load('ma_refill')
 local Recovery = load('ma_recovery')
-local store = load('ma_store').new(base, fs, serialization)
+local store = load('ma_store').new(base, fs, serialization, function()
+    if computer.realTime() - lastYield >= 0.05 then
+        -- Finish the snapshot before handling input or changing runtime state.
+        local ev = table.pack(event.pull(0))
+        if ev[1] then
+            pendingInput[#pendingInput + 1] = ev
+        end
+        lastYield = computer.realTime()
+    end
+end)
 local args = { ... }
 local command = args[1] or 'help'
 if command ~= 'setup' and command ~= 'check' and command ~= 'run' and command ~= 'recover' then
@@ -32,7 +50,7 @@ end
 local gui, engine
 local function screen()
     if not gui then
-        gui = load('ma_gui').new(component.gpu, event, unicode, C, M)
+        gui = load('ma_gui').new(component.gpu, { pull = pull }, unicode, C, M)
         gui.Editor = load('ma_editor')
     end
     return gui
@@ -122,7 +140,7 @@ local ok, err = xpcall(function()
                     end
                 end
                 if not held then
-                    local ev = event.pull(0.05)
+                    local ev = pull(0.05)
                     assert(ev ~= 'interrupted', '接管已取消，机器保持暂停')
                 end
             until held
@@ -156,7 +174,7 @@ local ok, err = xpcall(function()
         local stopping = false
         local interrupted = false
         local function input(timeout)
-            local ev = table.pack(event.pull(timeout))
+            local ev = table.pack(pull(timeout))
             while ev[1] do
                 engine:event(ev[1], ev[2])
                 local action = screen():runtimeEvent(table.unpack(ev, 1, ev.n))
@@ -173,19 +191,19 @@ local ok, err = xpcall(function()
                 elseif action == 'redraw' then
                     lastDraw = -math.huge
                 end
-                ev = table.pack(event.pull(0))
+                ev = table.pack(pull(0))
             end
             return false
         end
         local function draw()
-            local now = computer.uptime()
+            local now = computer.realTime()
             if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now
             end
         end
         screen():runtime(engine, refill)
-        lastDraw = computer.uptime()
+        lastDraw = computer.realTime()
         interrupted = screen():discardInput()
         engine.io.pulse = function()
             interrupted = interrupted or input(0)
@@ -209,7 +227,9 @@ local ok, err = xpcall(function()
             end
             local now = computer.uptime()
             if now - lastSave >= 5 then
-                engine.save()
+                if engine.dirty then
+                    engine.save()
+                end
                 lastSave = now
             end
             if stopping and engine:drain() then
@@ -232,12 +252,16 @@ local ok, err = xpcall(function()
         configure()
     until false
 end, debug.traceback)
+local paused, pauseErr = true
 if engine and command ~= 'check' then
-    engine:pause()
+    paused, pauseErr = pcall(engine.pause, engine)
 end
 term.clear()
 if not ok then
     io.stderr:write(M.text(err) .. '\n')
-elseif command == 'run' then
+end
+if not paused then
+    io.stderr:write('暂停或保存失败：' .. M.text(pauseErr) .. '\n')
+elseif ok and command == 'run' then
     print('已停止。再次运行 bec_multi.lua run 可继续接单或恢复未完成配方。')
 end
