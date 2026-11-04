@@ -741,6 +741,8 @@ function E.new(cfg, state, io, modules)
         beeChecked = {},
         held = {},
         nodeCache = {},
+        maxParallel = {},
+        intakeSample = {},
         now = 0,
         settled = {},
         filterNames = {},
@@ -1519,6 +1521,7 @@ function E:admissionTick()
             and self.U.equal(self:items(self.cfg.channels[1].buffer), remaining),
         '节点取料或公共原料子网余量与订单不一致；请核对实际原料和节点并行能力后续做'
     )
+    local ready = {}
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
         b.admitting = nil
@@ -1529,9 +1532,13 @@ function E:admissionTick()
                 b.phase = 'collect'
             end
         end
+        if b.phase == 'wait' then
+            ready[#ready + 1] = id
+        end
     end
     self.s.admission = nil
     self.save()
+    return #ready > 0 and ready or nil
 end
 
 function E:filters(a, unit)
@@ -1759,7 +1766,15 @@ function E:intakes()
         local b = self.s.arrays[a.address].batch
         if b and b.phase == 'admit' and not self.errors[a.address] then
             for _, w in ipairs(b.workers) do
-                if not w.accepted and not self:worker(w).accepted then
+                local cached = self:worker(w)
+                if
+                    not w.accepted
+                    and not cached.accepted
+                    and (
+                        not cached.intake and self.maxParallel[w.address] ~= w.count
+                        or cached.verifyRecipe
+                    )
+                then
                     pending[#pending + 1] = w.address
                 end
             end
@@ -1819,19 +1834,31 @@ function E:array(a)
             local cached = self:worker(w)
             if w.accepted or cached.accepted then
                 assigned = assigned + w.count
-            elseif not (self.intakeNodes and self.intakeNodes[w.address]) then
+            elseif
+                cached.verifyRecipe and not (self.intakeNodes and self.intakeNodes[w.address])
+            then
                 all = false
             else
                 local n = self.io.proxy(w.address)
                 if n.hasWork() then
                     n.setWorkAllowed(false)
-                    local count = n.getParallelRecipesInProgress()
-                    assert(
-                        n.getWorkProgress() == 0 and count == w.count,
-                        '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
-                    )
-                    assigned = assigned + count
                     local own = self.s.patterns[w.key or b.key]
+                    local sample = self.s.admission or b
+                    -- Per-node caps and the shared-network remainder verify the full allocation.
+                    local count = w.count
+                    if
+                        self.intakeSample[a.address] ~= sample
+                        or not own.unit
+                        or cached.verifyRecipe
+                    then
+                        count = n.getParallelRecipesInProgress()
+                        assert(
+                            n.getWorkProgress() == 0 and count == w.count,
+                            '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
+                        )
+                        self.intakeSample[a.address] = sample
+                    end
+                    assigned = assigned + count
                     if not own.unit or cached.verifyRecipe then
                         local required = n.getRequiredCondensate()
                         local steps = self.N.steps(n.getRecipeSteps())
@@ -1869,8 +1896,17 @@ function E:array(a)
                     end
                     cached.accepted = true
                 else
-                    if not cached.intake then
-                        n.setMaxParallel(w.count)
+                    if
+                        not cached.intake
+                        and (
+                            self.maxParallel[w.address] == w.count
+                            or self.intakeNodes and self.intakeNodes[w.address]
+                        )
+                    then
+                        if self.maxParallel[w.address] ~= w.count then
+                            n.setMaxParallel(w.count)
+                            self.maxParallel[w.address] = w.count
+                        end
                         n.setWorkAllowed(true)
                         cached.intake = true
                     end
@@ -1918,10 +1954,12 @@ function E:array(a)
         s.reuse = nil
         local cells = self:beeCells(a)
         if not b.fastChecked then
-            local ceiling = {}
-            for tier, c in pairs(cells) do
-                ceiling[tier] = self:beeCount(a, c)
+            local highest = 1
+            for _, step in ipairs(meta.steps) do
+                highest = math.max(highest, step.tier)
             end
+            local grade = self.N.tier(highest, cells)
+            local ceiling = { [grade] = self:beeCount(a, cells[grade]) }
             local parallel = 1
             for _, w in ipairs(b.workers) do
                 parallel = math.max(parallel, w.count)
@@ -2044,6 +2082,24 @@ function E:drain()
     return true
 end
 
+function E:arrayTick(a)
+    if not self.errors[a.address] then
+        local ok, err = pcall(self.array, self, a)
+        if not ok then
+            if self.saveFailed then
+                error(err, 0)
+            end
+            self.errors[a.address] = err
+            self.held[a.address] = nil
+            self:hold(a)
+            for _, n in ipairs(a.nodes) do
+                self.io.proxy(n.address).setWorkAllowed(false)
+            end
+        end
+    end
+    return self:pulse()
+end
+
 function E:tick()
     self.now = self.io.time()
     self.resourcesFresh = false
@@ -2097,25 +2153,21 @@ function E:tick()
     end
     self:intakes()
     for _, a in ipairs(self.arrays) do
-        if not self.errors[a.address] then
-            local ok, err = pcall(self.array, self, a)
-            if not ok then
-                if self.saveFailed then
-                    error(err, 0)
-                end
-                self.errors[a.address] = err
-                self.held[a.address] = nil
-                self:hold(a)
-                for _, n in ipairs(a.nodes) do
-                    self.io.proxy(n.address).setWorkAllowed(false)
-                end
-            end
-        end
-        if self:pulse() then
+        if self:arrayTick(a) then
             return
         end
     end
-    self:admissionTick()
+    local admitted = self:admissionTick()
+    if admitted and not self.resourceScan then
+        if not self.resourcesFresh and not self:resources(true) then
+            return
+        end
+        for _, id in ipairs(admitted) do
+            if self.s.arrays[id].batch.phase == 'wait' and self:arrayTick(self.byAddress[id]) then
+                return
+            end
+        end
+    end
 end
 return E
 ]=],
