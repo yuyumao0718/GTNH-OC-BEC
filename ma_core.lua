@@ -167,7 +167,10 @@ function E:check()
     local needed = 0
     for _, a in ipairs(self.arrays) do
         for _, id in ipairs({ a.loadPort, a.unloadPort }) do
-            assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
+            assert(
+                self.log:size(id) == 12,
+                '蜂群 ME-IO 端口选择有误，请检查转运器和端口方向：' .. id
+            )
         end
         local s = self.s.arrays[a.address]
         local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
@@ -215,6 +218,7 @@ function E:start()
         self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
         local s = self.s.arrays[a.address]
         s.counts = s.counts or {}
+        s.blocked = nil
         for _, n in ipairs(a.nodes) do
             self.io.proxy(n.address).setSpeedDivisor(1)
         end
@@ -688,7 +692,6 @@ function E:collectOrder(order, idle)
     b.phase = 'admit'
     b.admitting = true
     s.batch = b
-    s.blocked = nil
     self.s.admission = {
         count = assigned,
         members = { selected.address },
@@ -717,8 +720,6 @@ function E:schedule()
             if not s.batch and not s.bee and not s.lease then
                 idle[#idle + 1] = a
             end
-        elseif not s.batch then
-            s.blocked = '蜂群池中没有适用于该配方的蜂群'
         end
     end
     if meta.pattern.singularity then
@@ -768,7 +769,6 @@ function E:schedule()
             end
         end
         self.s.arrays[a.address].batch = b
-        self.s.arrays[a.address].blocked = nil
         members[#members + 1] = a.address
     end
     -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
@@ -866,7 +866,10 @@ function E:support(a, meta)
         end
     end
     for name in pairs(meta.unit) do
-        assert(bands[name], '请在共享流体目标中配置 ' .. self.M.name(name))
+        assert(
+            bands[name],
+            '请在第 1 页“预缓存纠缠流体配置”中启用 ' .. self.M.name(name)
+        )
     end
     assert(self:poolSupports(a, meta), '蜂群池中没有适用于该配方的蜂群')
 end
@@ -1082,7 +1085,11 @@ function E:array(a)
         if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
             return
         end
-        self.status[a.address] = s.blocked or '空闲'
+        local order = self.s.queue[1]
+        self.status[a.address] = order
+                and not self:poolSupports(a, self.s.patterns[order.key])
+                and '蜂群池中没有适用于当前待分配订单的蜂群'
+            or '空闲'
         return
     end
     local meta = self.s.patterns[b.key]

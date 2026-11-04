@@ -199,14 +199,14 @@ function G:recordName(cfg, section, value)
                 return '公共原料子网'
             end
             if section == 'feeds' and #cfg[section] == 1 then
-                return '主网流体供料'
+                return '预缓存设备'
             end
             local names = {
                 arrays = '观测阵列',
                 beePools = '蜂群池',
                 channels = '接收子网',
-                feeds = '供料组',
-                inventories = '库存位置',
+                feeds = '预缓存设备',
+                inventories = '元件容器连接',
             }
             return (names[section] or '配置') .. ' ' .. i
         end
@@ -399,6 +399,19 @@ function G:runtime(e, refill)
         fluids[#fluids + 1] = { id = id }
     end
     local channels = {}
+    local precaching = {}
+    local refillState = refill and refill.s
+    for _, f in ipairs(e.cfg.feeds) do
+        local s = refillState and refillState.feeds[f.id]
+        if s then
+            for i in pairs(s.pending) do
+                precaching[f.cells[i].material] = true
+            end
+            if s.loading then
+                precaching[f.cells[s.loading.index].material] = true
+            end
+        end
+    end
     for _, c in ipairs(e.cfg.channels) do
         channels[#channels + 1] = {
             label = '接单：' .. self:recordName(e.cfg, 'channels', c),
@@ -451,7 +464,8 @@ function G:runtime(e, refill)
             local reserve = (e.reserved or {})[r.id] or 0
             local status = not have and '待读取'
                 or have < reserve and '库存不足'
-                or r.band and have - reserve <= r.band.low and '等待预缓存'
+                or r.band and precaching[r.band.material] and '正在预缓存'
+                or r.band and (have - reserve <= r.band.low or refillState and refillState.active[r.band.material]) and '等待预缓存'
                 or '充足'
             self:put(2, y, prefix .. e.M.name(r.id, true), left - 42, ink.text, bg)
             self:put(left - 38, y, amount(have), 12, ink.cyan, bg)
@@ -646,14 +660,21 @@ function G:arrayPanel(e, x, top, width, bottom)
         ink.dim
     )
     local observed = (e.observations or {})[a.address]
-    local views = observed or {}
+    local views, workers = {}, {}
+    for _, n in pairs(observed or {}) do
+        views[n.address] = n
+    end
+    for _, worker in ipairs(b and b.workers or {}) do
+        workers[worker.address] = worker
+    end
     local per = math.max(1, bottom - top - 5)
     self.nodePages = math.max(1, math.ceil(#a.nodes / per))
     self.nodePage = math.max(1, math.min(self.nodePage, self.nodePages))
     for i = (self.nodePage - 1) * per + 1, math.min(#a.nodes, self.nodePage * per) do
         local y = top + 5 + i - (self.nodePage - 1) * per - 1
-        local n = views[i]
-        local worker = b and b.workers[i]
+        local address = a.nodes[i].address
+        local n = views[address]
+        local worker = workers[address]
         if b and b.phase == 'run' and n then
             self:put(
                 x,
@@ -670,20 +691,19 @@ function G:arrayPanel(e, x, top, width, bottom)
                 ink.cyan
             )
         else
-            self:put(
-                x,
-                y,
-                '#'
-                    .. i
-                    .. '  '
-                    .. (
-                        worker
-                            and (b.phase == 'run' and (observed and '本批完成' or '待读取') or (worker.accepted and '已取 ' or '分配 ') .. worker.count .. ' 份')
-                        or '空闲'
-                    ),
-                width,
-                ink.dim
-            )
+            local status = '空闲'
+            if worker then
+                if b.phase == 'run' then
+                    status = observed and '本批完成' or '待读取'
+                else
+                    local cached = (e.nodeCache or {})[address]
+                    local accepted = b.phase ~= 'admit'
+                        or worker.accepted
+                        or cached and cached.worker == worker and cached.accepted
+                    status = (accepted and '已取料 ' or '待取料 ') .. worker.count .. ' 份'
+                end
+            end
+            self:put(x, y, '#' .. i .. '  ' .. status, width, ink.dim)
         end
     end
     self:button('node-', x, bottom, '上页')

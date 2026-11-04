@@ -8,6 +8,8 @@ local tabs = {
     '下单 ME 接口配置',
 }
 local sides = { '下', '上', '北', '南', '西', '东' }
+local fluidLabels =
+    { enabled = '启用预缓存', low = '库存下限 L', high = '预缓存目标 L' }
 local function find(list, key, value)
     for i, x in ipairs(list or {}) do
         if x[key] == value then
@@ -46,7 +48,7 @@ function F.new(ui, cfg, component, save)
         self.schema[f.key] = f
     end
     self.feedDraft = ui.C.newRecord(self.schema.feeds.fields)
-    self.feedDraft.id = '供料组-1'
+    self.feedDraft.id = '预缓存设备-1'
     if #cfg.channels == 0 then
         self:record('channels')
     end
@@ -82,8 +84,7 @@ function F:record(section)
     if r.id then
         r.id = unique(
             self.cfg[section],
-            ({ feeds = '供料组', channels = '公共原料子网', beePools = '蜂群池' })[section]
-                .. '-'
+            ({ channels = '公共原料子网', beePools = '蜂群池' })[section] .. '-'
         )
     end
     self.cfg[section][#self.cfg[section] + 1] = r
@@ -356,7 +357,7 @@ function F:form(fluidIndex)
         field('约束场强度 L', x, 'fieldLimit', 'number', nil, 1)
     elseif o.kind == 'fluids' then
         title(self.ui.M.name(x.material))
-        virtual('启用预缓存', 'boolean', function()
+        virtual(fluidLabels.enabled, 'boolean', function()
             return find(self.cfg.bands, 'material', x.material) ~= nil
         end, function(v)
             local _, i = find(self.cfg.bands, 'material', x.material)
@@ -367,7 +368,7 @@ function F:form(fluidIndex)
             end
             self:feedCell(self:feeds()[1], x.material, v)
         end)
-        for _, spec in ipairs({ { '库存下限 L', 'low', 0 }, { '补充目标 L', 'high', 1 } }) do
+        for _, spec in ipairs({ { fluidLabels.low, 'low', 0 }, { fluidLabels.high, 'high', 1 } }) do
             field(spec[1], x, spec[2], 'number', nil, spec[3])
         end
     elseif o.kind == 'generators' then
@@ -416,6 +417,7 @@ function F:form(fluidIndex)
             boxes[#boxes + 1] = box
             table.sort(boxes)
             x.boxes = boxes
+            self:changed()
         end)
         title('选择左侧箱子，批量登记槽位和等级')
     elseif o.kind == 'array' then
@@ -485,6 +487,7 @@ function F:form(fluidIndex)
                         local b, i = find(x.beeBoxes, 'box', box)
                         table.remove(x.beeBoxes, i)
                         self:removeUnusedInventory(b.inventory)
+                        self:changed()
                     end)
                 end
                 virtual('箱子 ' .. box .. ' 的方向', 'side', function()
@@ -621,9 +624,12 @@ end
 
 function F:bindNodes(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
+    local count = #a.nodes
     local ok, message = self.ui.C.bindNodes(self.cfg, a, self.devices)
     if not ok then
         self:nodePicker(a)
+    elseif #a.nodes ~= count then
+        self:changed()
     end
     self.message = message
 end
@@ -636,6 +642,7 @@ function F:doorPicker(a)
     end
     if #options == 1 then
         a.diode = options[1].value
+        self:changed()
         return
     end
     self.popup = {
@@ -694,7 +701,6 @@ function F:patternPicker(c)
         end,
     }
 end
-local fluidLabels = { enabled = '启用预缓存', low = '库存下限 L', high = '补充目标 L' }
 function F:fluidField(index, key, rows)
     for _, f in ipairs(rows or self:form(index)) do
         if f.label == fluidLabels[key] then
@@ -727,9 +733,11 @@ function F:commit()
             return false
         end
     end
-    f.set(v)
     self.edit = nil
-    self:changed()
+    if f.get() ~= v then
+        f.set(v)
+        self:changed()
+    end
     return true
 end
 
@@ -739,7 +747,6 @@ function F:activate(f, button)
         self:changed()
     elseif f.kind == 'action' then
         f.run()
-        self:changed()
     elseif f.kind == 'boolean' then
         f.set(not f.get())
         self:changed()
@@ -752,6 +759,8 @@ function F:activate(f, button)
         end
         self.popup = {
             title = f.label,
+            empty = f.source == 'beePools'
+                and '请先在第 2 页“约束场与蜂群配置”中新增蜂群池',
             options = options,
             page = 1,
             current = f.get(),
@@ -797,6 +806,7 @@ function F:act(action, button)
     end
     if action == 'cancel-edit' then
         self.edit = nil
+        self.message = '已取消本次输入'
         return
     end
     if action:match('^fluid%-preset:') then
@@ -886,6 +896,7 @@ function F:act(action, button)
             self.message = tostring(err):gsub('^.-:%d+: ', '')
         end
     elseif action == 'refresh' then
+        local count = #self.cfg.arrays
         self.devices = self.ui.C.scan(self.component, self.cfg)
         local popup = self.popup
         if popup and popup.reopen then
@@ -896,9 +907,11 @@ function F:act(action, button)
                     self.popup.checked[address] = checked
                 end
             end
+        end
+        if #self.cfg.arrays ~= count then
             self:changed()
         end
-        self.message = '设备列表已刷新；已有绑定保持不变'
+        self.message = '设备列表已刷新'
     elseif action == 'add' then
         if self.tab == 2 then
             self:record('beePools')
@@ -1334,7 +1347,6 @@ function F:draw()
     local width = w - x - 1
     self.left = left
     local b = { top = 6, bottom = h - 7, status = h - 6, nav = h - 5 }
-    self.bounds = b
     local tabWidth = 0
     for i, t in ipairs(tabs) do
         tabWidth = tabWidth + ui.u.wlen(i .. ' ' .. t) + 3
@@ -1440,7 +1452,7 @@ function F:draw()
             end
         end
         if #p.options == 0 then
-            ui:put(x, 8, '没有可选设备；按 F 刷新', width, ink.amber)
+            ui:wrap(x, 8, p.empty or '没有可选设备；按 F 刷新', width, 2, ink.amber)
         end
         if p.apply then
             ui:control('apply', x, b.status, '确认选择')
@@ -1489,13 +1501,19 @@ function F:draw()
         if #rows == 0 then
             ui:put(x, 6, '请先添加配置，或按 F 刷新设备', width, ink.dim)
         end
-        ui:put(
-            x,
-            b.status,
-            '方向：左键下一项，右键上一项；首尾循环',
-            width,
-            ink.dim
-        )
+        if self.edit then
+            ui:control('confirm-edit', x, b.status, '确认')
+            ui:control('cancel-edit', x + 10, b.status, '取消')
+            ui:put(x + 20, b.status, '回车确认', width - 20, ink.dim)
+        else
+            ui:put(
+                x,
+                b.status,
+                '方向：左键下一项，右键上一项；首尾循环',
+                width,
+                ink.dim
+            )
+        end
     end
     if self.popup and self.popup.clearRecipes then
         ui:wrap(

@@ -123,7 +123,7 @@ function I.identify(catalog, counts)
     if not next(counts) then
         return nil
     end
-    local found, partial
+    local partial
     for _, p in ipairs(catalog.patterns) do
         local compatible = true
         for key, n in pairs(counts) do
@@ -142,19 +142,14 @@ function I.identify(catalog, counts)
                 end
             end
             if ready then
-                assert(
-                    not found,
-                    '收到的原料对应多个配方，请检查样板；机器已暂停'
-                )
-                found = p
+                return p
             end
         end
     end
     assert(
         partial,
-        '收到无法识别的原料或多种配方的混合原料；机器保持暂停'
+        '公共原料子网中有无法识别或混入其他配方的原料，已停止接单；请核对原料和处理样板'
     )
-    return found
 end
 -- A stopped admission gate leaves k complete vectors plus at most one partial vector.
 -- The largest ceil(r_i/v_i) includes that accepted partial delivery; floor-min is ready now.

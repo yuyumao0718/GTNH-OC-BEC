@@ -34,10 +34,10 @@ C.schema = {
     dev('storage', '共享约束场', 'bec_storage'),
     num('fieldLimit', '约束场强度 L', 1000000000000, 1, 9007199254740991),
     num('singularityWait', '算力奇点等待阈值（秒）', 300, 1),
-    list('inventories', '库存位置', {
+    list('inventories', '元件容器连接', {
         idField(),
-        dev('transposer', '读取库存的转运器', 'transposer'),
-        side('side', '库存方向'),
+        dev('transposer', '连接容器的转运器', 'transposer'),
+        side('side', '容器方向'),
     }),
     list('channels', 'AE下单', {
         idField(),
@@ -68,14 +68,14 @@ C.schema = {
         ref('unloadPort', '蜂群回收 ME-IO 端口', 'inventories'),
         list('beeBoxes', '蜂群箱连接', {
             num('box', '箱子编号', 1, 1),
-            ref('inventory', '蜂群箱库存位置', 'inventories'),
+            ref('inventory', '蜂群箱连接', 'inventories'),
         }),
     }),
     list('generators', '纠缠装置', {
         dev('address', '纠缠装置', 'generator'),
-        ref('feed', '纠缠装置原料子网', 'feeds'),
+        ref('feed', '预缓存设备', 'feeds'),
     }),
-    list('feeds', '纠缠装置供料组', {
+    list('feeds', '预缓存设备', {
         idField(),
         ref('io', '主网流体转运 ME-IO 端口', 'inventories'),
         num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
@@ -86,7 +86,7 @@ C.schema = {
             ref('inventory', '流体驱动器', 'inventories'),
         }),
     }),
-    list('bands', '共享流体目标', {
+    list('bands', '流体预缓存', {
         ref('material', '流体', 'materials'),
         num('low', '下限 L', 1000000, 0, 9007199254740991),
         num('high', '目标 L', 2000000, 1, 9007199254740991),
@@ -273,9 +273,13 @@ function C.validate(cfg, component, U)
     end
     local nodes, ports, owners, arrays, diodes = {}, {}, {}, {}, {}
     local function port(id)
-        assert(inv[id], '未知库存位置：' .. tostring(id))
-        assert(not ports[id], 'ME-IO 端口重复分配：' .. id)
-        ports[id] = true
+        local p = assert(inv[id], '未配置 ME-IO 端口连接：' .. tostring(id))
+        local key = p.transposer .. ':' .. p.side
+        assert(
+            not ports[key],
+            'ME-IO 端口重复分配，请检查转运器和端口方向：' .. id .. ' / ' .. key
+        )
+        ports[key] = true
     end
     local function own(id, slot)
         local key = id .. ':' .. slot
@@ -331,22 +335,19 @@ function C.validate(cfg, component, U)
                 '阵列的蜂群箱编号重复：' .. a.address .. ' / ' .. box.box
             )
             boxes[box.box] = true
-            assert(inv[box.inventory], '未知蜂群箱库存位置：' .. box.inventory)
+            assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
             local key = a.beePool .. ':' .. box.box
             assert(
                 not boxPools[box.inventory] or boxPools[box.inventory] == key,
                 '同一蜂群箱不能登记为不同的池或箱子编号'
             )
-            local used = false
             for _, c in ipairs(pool.cells) do
                 if c.box == box.box then
-                    used = true
                     if not boxPools[box.inventory] then
                         own(box.inventory, c.slot)
                     end
                 end
             end
-            assert(used, '蜂群池中没有登记该箱子的元件：' .. key)
             boxPools[box.inventory] = key
             connected(box.inventory, a.loadPort)
             connected(box.inventory, a.unloadPort)
@@ -370,7 +371,7 @@ function C.validate(cfg, component, U)
     for _, g in ipairs(cfg.generators) do
         assert(
             feeds[g.feed] and not gen[g.address],
-            '纠缠装置重复配置，或未选择有效的原料网'
+            '纠缠装置重复配置，或未配置对应的预缓存设备'
         )
         gen[g.address] = g.feed
     end
@@ -382,12 +383,15 @@ function C.validate(cfg, component, U)
                 has = true
             end
         end
-        assert(has, '原料网没有纠缠装置：' .. f.id)
+        assert(
+            has,
+            '预缓存设备未关联纠缠装置，请在第 1 页启用纠缠装置：' .. f.id
+        )
         local seen = {}
         for _, c in ipairs(f.cells) do
             assert(
                 band[c.material] and not seen[c.material],
-                '原料网的流体重复配置，或未设置预缓存目标'
+                '预缓存流体元件重复配置，或未设置对应流体的预缓存目标'
             )
             seen[c.material] = true
             connected(c.inventory, f.io)

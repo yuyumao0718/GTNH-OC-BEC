@@ -22,7 +22,11 @@ function R.check(cfg, state, U, proxy, M)
         assert(U.equal(a, b), '续做仍需保留' .. message)
     end
     local function inventory(id)
-        same(before.inventories[id], after.inventories[id], '库存位置：' .. id)
+        same(
+            before.inventories[id],
+            after.inventories[id],
+            '元件容器的转运器和方向：' .. id
+        )
     end
     local function fields(a, b, keys, message)
         assert(b, '续做仍需保留' .. message)
@@ -121,7 +125,10 @@ function R.check(cfg, state, U, proxy, M)
         if s.loading or next(s.pending or {}) then
             active = true
             local a, b = before.feeds[id], after.feeds[id]
-            assert(b, '纠缠流体尚未补充完成，请保留原料子网：' .. id)
+            assert(
+                b,
+                '纠缠流体预缓存尚未完成，请保留对应的预缓存设备：' .. id
+            )
             if s.loading then
                 same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)

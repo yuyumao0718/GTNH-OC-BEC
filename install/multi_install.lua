@@ -315,10 +315,10 @@ C.schema = {
     dev('storage', '共享约束场', 'bec_storage'),
     num('fieldLimit', '约束场强度 L', 1000000000000, 1, 9007199254740991),
     num('singularityWait', '算力奇点等待阈值（秒）', 300, 1),
-    list('inventories', '库存位置', {
+    list('inventories', '元件容器连接', {
         idField(),
-        dev('transposer', '读取库存的转运器', 'transposer'),
-        side('side', '库存方向'),
+        dev('transposer', '连接容器的转运器', 'transposer'),
+        side('side', '容器方向'),
     }),
     list('channels', 'AE下单', {
         idField(),
@@ -349,14 +349,14 @@ C.schema = {
         ref('unloadPort', '蜂群回收 ME-IO 端口', 'inventories'),
         list('beeBoxes', '蜂群箱连接', {
             num('box', '箱子编号', 1, 1),
-            ref('inventory', '蜂群箱库存位置', 'inventories'),
+            ref('inventory', '蜂群箱连接', 'inventories'),
         }),
     }),
     list('generators', '纠缠装置', {
         dev('address', '纠缠装置', 'generator'),
-        ref('feed', '纠缠装置原料子网', 'feeds'),
+        ref('feed', '预缓存设备', 'feeds'),
     }),
-    list('feeds', '纠缠装置供料组', {
+    list('feeds', '预缓存设备', {
         idField(),
         ref('io', '主网流体转运 ME-IO 端口', 'inventories'),
         num('drive1Side', '第一台流体驱动器方向', 0, 0, 5),
@@ -367,7 +367,7 @@ C.schema = {
             ref('inventory', '流体驱动器', 'inventories'),
         }),
     }),
-    list('bands', '共享流体目标', {
+    list('bands', '流体预缓存', {
         ref('material', '流体', 'materials'),
         num('low', '下限 L', 1000000, 0, 9007199254740991),
         num('high', '目标 L', 2000000, 1, 9007199254740991),
@@ -554,9 +554,13 @@ function C.validate(cfg, component, U)
     end
     local nodes, ports, owners, arrays, diodes = {}, {}, {}, {}, {}
     local function port(id)
-        assert(inv[id], '未知库存位置：' .. tostring(id))
-        assert(not ports[id], 'ME-IO 端口重复分配：' .. id)
-        ports[id] = true
+        local p = assert(inv[id], '未配置 ME-IO 端口连接：' .. tostring(id))
+        local key = p.transposer .. ':' .. p.side
+        assert(
+            not ports[key],
+            'ME-IO 端口重复分配，请检查转运器和端口方向：' .. id .. ' / ' .. key
+        )
+        ports[key] = true
     end
     local function own(id, slot)
         local key = id .. ':' .. slot
@@ -612,22 +616,19 @@ function C.validate(cfg, component, U)
                 '阵列的蜂群箱编号重复：' .. a.address .. ' / ' .. box.box
             )
             boxes[box.box] = true
-            assert(inv[box.inventory], '未知蜂群箱库存位置：' .. box.inventory)
+            assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
             local key = a.beePool .. ':' .. box.box
             assert(
                 not boxPools[box.inventory] or boxPools[box.inventory] == key,
                 '同一蜂群箱不能登记为不同的池或箱子编号'
             )
-            local used = false
             for _, c in ipairs(pool.cells) do
                 if c.box == box.box then
-                    used = true
                     if not boxPools[box.inventory] then
                         own(box.inventory, c.slot)
                     end
                 end
             end
-            assert(used, '蜂群池中没有登记该箱子的元件：' .. key)
             boxPools[box.inventory] = key
             connected(box.inventory, a.loadPort)
             connected(box.inventory, a.unloadPort)
@@ -651,7 +652,7 @@ function C.validate(cfg, component, U)
     for _, g in ipairs(cfg.generators) do
         assert(
             feeds[g.feed] and not gen[g.address],
-            '纠缠装置重复配置，或未选择有效的原料网'
+            '纠缠装置重复配置，或未配置对应的预缓存设备'
         )
         gen[g.address] = g.feed
     end
@@ -663,12 +664,15 @@ function C.validate(cfg, component, U)
                 has = true
             end
         end
-        assert(has, '原料网没有纠缠装置：' .. f.id)
+        assert(
+            has,
+            '预缓存设备未关联纠缠装置，请在第 1 页启用纠缠装置：' .. f.id
+        )
         local seen = {}
         for _, c in ipairs(f.cells) do
             assert(
                 band[c.material] and not seen[c.material],
-                '原料网的流体重复配置，或未设置预缓存目标'
+                '预缓存流体元件重复配置，或未设置对应流体的预缓存目标'
             )
             seen[c.material] = true
             connected(c.inventory, f.io)
@@ -875,7 +879,10 @@ function E:check()
     local needed = 0
     for _, a in ipairs(self.arrays) do
         for _, id in ipairs({ a.loadPort, a.unloadPort }) do
-            assert(self.log:size(id) == 12, '蜂群库存位置不是 ME-IO 端口：' .. id)
+            assert(
+                self.log:size(id) == 12,
+                '蜂群 ME-IO 端口选择有误，请检查转运器和端口方向：' .. id
+            )
         end
         local s = self.s.arrays[a.address]
         local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
@@ -923,6 +930,7 @@ function E:start()
         self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
         local s = self.s.arrays[a.address]
         s.counts = s.counts or {}
+        s.blocked = nil
         for _, n in ipairs(a.nodes) do
             self.io.proxy(n.address).setSpeedDivisor(1)
         end
@@ -1396,7 +1404,6 @@ function E:collectOrder(order, idle)
     b.phase = 'admit'
     b.admitting = true
     s.batch = b
-    s.blocked = nil
     self.s.admission = {
         count = assigned,
         members = { selected.address },
@@ -1425,8 +1432,6 @@ function E:schedule()
             if not s.batch and not s.bee and not s.lease then
                 idle[#idle + 1] = a
             end
-        elseif not s.batch then
-            s.blocked = '蜂群池中没有适用于该配方的蜂群'
         end
     end
     if meta.pattern.singularity then
@@ -1476,7 +1481,6 @@ function E:schedule()
             end
         end
         self.s.arrays[a.address].batch = b
-        self.s.arrays[a.address].blocked = nil
         members[#members + 1] = a.address
     end
     -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
@@ -1574,7 +1578,10 @@ function E:support(a, meta)
         end
     end
     for name in pairs(meta.unit) do
-        assert(bands[name], '请在共享流体目标中配置 ' .. self.M.name(name))
+        assert(
+            bands[name],
+            '请在第 1 页“预缓存纠缠流体配置”中启用 ' .. self.M.name(name)
+        )
     end
     assert(self:poolSupports(a, meta), '蜂群池中没有适用于该配方的蜂群')
 end
@@ -1790,7 +1797,11 @@ function E:array(a)
         if (s.lease or s.bee or s.request) and not self:bees(a, s, nil) then
             return
         end
-        self.status[a.address] = s.blocked or '空闲'
+        local order = self.s.queue[1]
+        self.status[a.address] = order
+                and not self:poolSupports(a, self.s.patterns[order.key])
+                and '蜂群池中没有适用于当前待分配订单的蜂群'
+            or '空闲'
         return
     end
     local meta = self.s.patterns[b.key]
@@ -2117,6 +2128,8 @@ local tabs = {
     '下单 ME 接口配置',
 }
 local sides = { '下', '上', '北', '南', '西', '东' }
+local fluidLabels =
+    { enabled = '启用预缓存', low = '库存下限 L', high = '预缓存目标 L' }
 local function find(list, key, value)
     for i, x in ipairs(list or {}) do
         if x[key] == value then
@@ -2155,7 +2168,7 @@ function F.new(ui, cfg, component, save)
         self.schema[f.key] = f
     end
     self.feedDraft = ui.C.newRecord(self.schema.feeds.fields)
-    self.feedDraft.id = '供料组-1'
+    self.feedDraft.id = '预缓存设备-1'
     if #cfg.channels == 0 then
         self:record('channels')
     end
@@ -2191,8 +2204,7 @@ function F:record(section)
     if r.id then
         r.id = unique(
             self.cfg[section],
-            ({ feeds = '供料组', channels = '公共原料子网', beePools = '蜂群池' })[section]
-                .. '-'
+            ({ channels = '公共原料子网', beePools = '蜂群池' })[section] .. '-'
         )
     end
     self.cfg[section][#self.cfg[section] + 1] = r
@@ -2465,7 +2477,7 @@ function F:form(fluidIndex)
         field('约束场强度 L', x, 'fieldLimit', 'number', nil, 1)
     elseif o.kind == 'fluids' then
         title(self.ui.M.name(x.material))
-        virtual('启用预缓存', 'boolean', function()
+        virtual(fluidLabels.enabled, 'boolean', function()
             return find(self.cfg.bands, 'material', x.material) ~= nil
         end, function(v)
             local _, i = find(self.cfg.bands, 'material', x.material)
@@ -2476,7 +2488,7 @@ function F:form(fluidIndex)
             end
             self:feedCell(self:feeds()[1], x.material, v)
         end)
-        for _, spec in ipairs({ { '库存下限 L', 'low', 0 }, { '补充目标 L', 'high', 1 } }) do
+        for _, spec in ipairs({ { fluidLabels.low, 'low', 0 }, { fluidLabels.high, 'high', 1 } }) do
             field(spec[1], x, spec[2], 'number', nil, spec[3])
         end
     elseif o.kind == 'generators' then
@@ -2525,6 +2537,7 @@ function F:form(fluidIndex)
             boxes[#boxes + 1] = box
             table.sort(boxes)
             x.boxes = boxes
+            self:changed()
         end)
         title('选择左侧箱子，批量登记槽位和等级')
     elseif o.kind == 'array' then
@@ -2594,6 +2607,7 @@ function F:form(fluidIndex)
                         local b, i = find(x.beeBoxes, 'box', box)
                         table.remove(x.beeBoxes, i)
                         self:removeUnusedInventory(b.inventory)
+                        self:changed()
                     end)
                 end
                 virtual('箱子 ' .. box .. ' 的方向', 'side', function()
@@ -2730,9 +2744,12 @@ end
 
 function F:bindNodes(a)
     self.devices = self.ui.C.scan(self.component, self.cfg)
+    local count = #a.nodes
     local ok, message = self.ui.C.bindNodes(self.cfg, a, self.devices)
     if not ok then
         self:nodePicker(a)
+    elseif #a.nodes ~= count then
+        self:changed()
     end
     self.message = message
 end
@@ -2745,6 +2762,7 @@ function F:doorPicker(a)
     end
     if #options == 1 then
         a.diode = options[1].value
+        self:changed()
         return
     end
     self.popup = {
@@ -2803,7 +2821,6 @@ function F:patternPicker(c)
         end,
     }
 end
-local fluidLabels = { enabled = '启用预缓存', low = '库存下限 L', high = '补充目标 L' }
 function F:fluidField(index, key, rows)
     for _, f in ipairs(rows or self:form(index)) do
         if f.label == fluidLabels[key] then
@@ -2836,9 +2853,11 @@ function F:commit()
             return false
         end
     end
-    f.set(v)
     self.edit = nil
-    self:changed()
+    if f.get() ~= v then
+        f.set(v)
+        self:changed()
+    end
     return true
 end
 
@@ -2848,7 +2867,6 @@ function F:activate(f, button)
         self:changed()
     elseif f.kind == 'action' then
         f.run()
-        self:changed()
     elseif f.kind == 'boolean' then
         f.set(not f.get())
         self:changed()
@@ -2861,6 +2879,8 @@ function F:activate(f, button)
         end
         self.popup = {
             title = f.label,
+            empty = f.source == 'beePools'
+                and '请先在第 2 页“约束场与蜂群配置”中新增蜂群池',
             options = options,
             page = 1,
             current = f.get(),
@@ -2906,6 +2926,7 @@ function F:act(action, button)
     end
     if action == 'cancel-edit' then
         self.edit = nil
+        self.message = '已取消本次输入'
         return
     end
     if action:match('^fluid%-preset:') then
@@ -2995,6 +3016,7 @@ function F:act(action, button)
             self.message = tostring(err):gsub('^.-:%d+: ', '')
         end
     elseif action == 'refresh' then
+        local count = #self.cfg.arrays
         self.devices = self.ui.C.scan(self.component, self.cfg)
         local popup = self.popup
         if popup and popup.reopen then
@@ -3005,9 +3027,11 @@ function F:act(action, button)
                     self.popup.checked[address] = checked
                 end
             end
+        end
+        if #self.cfg.arrays ~= count then
             self:changed()
         end
-        self.message = '设备列表已刷新；已有绑定保持不变'
+        self.message = '设备列表已刷新'
     elseif action == 'add' then
         if self.tab == 2 then
             self:record('beePools')
@@ -3443,7 +3467,6 @@ function F:draw()
     local width = w - x - 1
     self.left = left
     local b = { top = 6, bottom = h - 7, status = h - 6, nav = h - 5 }
-    self.bounds = b
     local tabWidth = 0
     for i, t in ipairs(tabs) do
         tabWidth = tabWidth + ui.u.wlen(i .. ' ' .. t) + 3
@@ -3549,7 +3572,7 @@ function F:draw()
             end
         end
         if #p.options == 0 then
-            ui:put(x, 8, '没有可选设备；按 F 刷新', width, ink.amber)
+            ui:wrap(x, 8, p.empty or '没有可选设备；按 F 刷新', width, 2, ink.amber)
         end
         if p.apply then
             ui:control('apply', x, b.status, '确认选择')
@@ -3598,13 +3621,19 @@ function F:draw()
         if #rows == 0 then
             ui:put(x, 6, '请先添加配置，或按 F 刷新设备', width, ink.dim)
         end
-        ui:put(
-            x,
-            b.status,
-            '方向：左键下一项，右键上一项；首尾循环',
-            width,
-            ink.dim
-        )
+        if self.edit then
+            ui:control('confirm-edit', x, b.status, '确认')
+            ui:control('cancel-edit', x + 10, b.status, '取消')
+            ui:put(x + 20, b.status, '回车确认', width - 20, ink.dim)
+        else
+            ui:put(
+                x,
+                b.status,
+                '方向：左键下一项，右键上一项；首尾循环',
+                width,
+                ink.dim
+            )
+        end
     end
     if self.popup and self.popup.clearRecipes then
         ui:wrap(
@@ -3847,14 +3876,14 @@ function G:recordName(cfg, section, value)
                 return '公共原料子网'
             end
             if section == 'feeds' and #cfg[section] == 1 then
-                return '主网流体供料'
+                return '预缓存设备'
             end
             local names = {
                 arrays = '观测阵列',
                 beePools = '蜂群池',
                 channels = '接收子网',
-                feeds = '供料组',
-                inventories = '库存位置',
+                feeds = '预缓存设备',
+                inventories = '元件容器连接',
             }
             return (names[section] or '配置') .. ' ' .. i
         end
@@ -4047,6 +4076,19 @@ function G:runtime(e, refill)
         fluids[#fluids + 1] = { id = id }
     end
     local channels = {}
+    local precaching = {}
+    local refillState = refill and refill.s
+    for _, f in ipairs(e.cfg.feeds) do
+        local s = refillState and refillState.feeds[f.id]
+        if s then
+            for i in pairs(s.pending) do
+                precaching[f.cells[i].material] = true
+            end
+            if s.loading then
+                precaching[f.cells[s.loading.index].material] = true
+            end
+        end
+    end
     for _, c in ipairs(e.cfg.channels) do
         channels[#channels + 1] = {
             label = '接单：' .. self:recordName(e.cfg, 'channels', c),
@@ -4099,7 +4141,8 @@ function G:runtime(e, refill)
             local reserve = (e.reserved or {})[r.id] or 0
             local status = not have and '待读取'
                 or have < reserve and '库存不足'
-                or r.band and have - reserve <= r.band.low and '等待预缓存'
+                or r.band and precaching[r.band.material] and '正在预缓存'
+                or r.band and (have - reserve <= r.band.low or refillState and refillState.active[r.band.material]) and '等待预缓存'
                 or '充足'
             self:put(2, y, prefix .. e.M.name(r.id, true), left - 42, ink.text, bg)
             self:put(left - 38, y, amount(have), 12, ink.cyan, bg)
@@ -4294,14 +4337,21 @@ function G:arrayPanel(e, x, top, width, bottom)
         ink.dim
     )
     local observed = (e.observations or {})[a.address]
-    local views = observed or {}
+    local views, workers = {}, {}
+    for _, n in pairs(observed or {}) do
+        views[n.address] = n
+    end
+    for _, worker in ipairs(b and b.workers or {}) do
+        workers[worker.address] = worker
+    end
     local per = math.max(1, bottom - top - 5)
     self.nodePages = math.max(1, math.ceil(#a.nodes / per))
     self.nodePage = math.max(1, math.min(self.nodePage, self.nodePages))
     for i = (self.nodePage - 1) * per + 1, math.min(#a.nodes, self.nodePage * per) do
         local y = top + 5 + i - (self.nodePage - 1) * per - 1
-        local n = views[i]
-        local worker = b and b.workers[i]
+        local address = a.nodes[i].address
+        local n = views[address]
+        local worker = workers[address]
         if b and b.phase == 'run' and n then
             self:put(
                 x,
@@ -4318,20 +4368,19 @@ function G:arrayPanel(e, x, top, width, bottom)
                 ink.cyan
             )
         else
-            self:put(
-                x,
-                y,
-                '#'
-                    .. i
-                    .. '  '
-                    .. (
-                        worker
-                            and (b.phase == 'run' and (observed and '本批完成' or '待读取') or (worker.accepted and '已取 ' or '分配 ') .. worker.count .. ' 份')
-                        or '空闲'
-                    ),
-                width,
-                ink.dim
-            )
+            local status = '空闲'
+            if worker then
+                if b.phase == 'run' then
+                    status = observed and '本批完成' or '待读取'
+                else
+                    local cached = (e.nodeCache or {})[address]
+                    local accepted = b.phase ~= 'admit'
+                        or worker.accepted
+                        or cached and cached.worker == worker and cached.accepted
+                    status = (accepted and '已取料 ' or '待取料 ') .. worker.count .. ' 份'
+                end
+            end
+            self:put(x, y, '#' .. i .. '  ' .. status, width, ink.dim)
         end
     end
     self:button('node-', x, bottom, '上页')
@@ -4535,7 +4584,7 @@ function I.identify(catalog, counts)
     if not next(counts) then
         return nil
     end
-    local found, partial
+    local partial
     for _, p in ipairs(catalog.patterns) do
         local compatible = true
         for key, n in pairs(counts) do
@@ -4554,19 +4603,14 @@ function I.identify(catalog, counts)
                 end
             end
             if ready then
-                assert(
-                    not found,
-                    '收到的原料对应多个配方，请检查样板；机器已暂停'
-                )
-                found = p
+                return p
             end
         end
     end
     assert(
         partial,
-        '收到无法识别的原料或多种配方的混合原料；机器保持暂停'
+        '公共原料子网中有无法识别或混入其他配方的原料，已停止接单；请核对原料和处理样板'
     )
-    return found
 end
 -- A stopped admission gate leaves k complete vectors plus at most one partial vector.
 -- The largest ceil(r_i/v_i) includes that accepted partial delivery; floor-min is ready now.
@@ -4610,7 +4654,7 @@ function L.new(cfg, state, proxy, save, U)
 end
 
 function L:stack(id, slot)
-    local e = assert(self.inventories[id], '未知库存：' .. tostring(id))
+    local e = assert(self.inventories[id], '未配置元件容器连接：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
 end
 
@@ -4618,7 +4662,7 @@ function L:size(id)
     local e = assert(self.inventories[id])
     return assert(
         self.proxy(e.transposer).getInventorySize(e.side),
-        '无法读取库存，请检查转运器方向和连接：' .. id
+        '无法读取元件容器，请检查转运器方向和连接：' .. id
     )
 end
 
@@ -4884,7 +4928,11 @@ function R.check(cfg, state, U, proxy, M)
         assert(U.equal(a, b), '续做仍需保留' .. message)
     end
     local function inventory(id)
-        same(before.inventories[id], after.inventories[id], '库存位置：' .. id)
+        same(
+            before.inventories[id],
+            after.inventories[id],
+            '元件容器的转运器和方向：' .. id
+        )
     end
     local function fields(a, b, keys, message)
         assert(b, '续做仍需保留' .. message)
@@ -4983,7 +5031,10 @@ function R.check(cfg, state, U, proxy, M)
         if s.loading or next(s.pending or {}) then
             active = true
             local a, b = before.feeds[id], after.feeds[id]
-            assert(b, '纠缠流体尚未补充完成，请保留原料子网：' .. id)
+            assert(
+                b,
+                '纠缠流体预缓存尚未完成，请保留对应的预缓存设备：' .. id
+            )
             if s.loading then
                 same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
                 inventory(a.io)

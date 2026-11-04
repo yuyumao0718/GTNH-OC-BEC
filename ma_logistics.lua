@@ -12,7 +12,7 @@ function L.new(cfg, state, proxy, save, U)
 end
 
 function L:stack(id, slot)
-    local e = assert(self.inventories[id], '未知库存：' .. tostring(id))
+    local e = assert(self.inventories[id], '未配置元件容器连接：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
 end
 
@@ -20,7 +20,7 @@ function L:size(id)
     local e = assert(self.inventories[id])
     return assert(
         self.proxy(e.transposer).getInventorySize(e.side),
-        '无法读取库存，请检查转运器方向和连接：' .. id
+        '无法读取元件容器，请检查转运器方向和连接：' .. id
     )
 end
 
