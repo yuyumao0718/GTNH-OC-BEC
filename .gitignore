@@ -1,0 +1,6 @@
+/.testdeps/
+/.tmp/
+/tests/previews/
+/simulation/*-results.json
+/multi-array-openos.zip
+__pycache__/

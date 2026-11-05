@@ -932,7 +932,6 @@ function E:start()
         self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
         local s = self.s.arrays[a.address]
         s.counts = s.counts or {}
-        s.blocked = nil
         for _, n in ipairs(a.nodes) do
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
@@ -1657,19 +1656,14 @@ function E:bees(a, s, want)
         if not self.log:step(owner, box.inventory, port, slot, 1, true) then
             return false
         end
-        b.phase = 'io'
+        b.phase = 'back'
         self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    if b.phase == 'io' then
-        b.phase = 'back'
-        if self:pulse() then
-            return false
-        end
-    end
-    if b.phase == 'back' then
+    -- Existing checkpoints can still name the return wait 'io'.
+    if b.phase == 'back' or b.phase == 'io' then
         if not self.log:step(owner, port, box.inventory, 7, slot) then
             return false
         end
@@ -1941,13 +1935,6 @@ function E:array(a)
                 return
             end
             self:bees(a, s, nil)
-            self.status[a.address] = self.U.total(b.reserve) > self.cfg.fieldLimit
-                    and string.format(
-                        '凝聚物需求 %.0f L 超过场强容量 %.0f L；请按 Ctrl+C 暂停，提高约束场强度后续做',
-                        self.U.total(b.reserve),
-                        self.cfg.fieldLimit
-                    )
-                or '等待凝聚物'
             return
         end
         self:filters(a, meta.unit)
@@ -4035,7 +4022,7 @@ local phases = {
     ['return'] = '加工完成',
 }
 
-local function phase(b, s)
+local function phase(e, b, s)
     if s and s.bee then
         return (s.bee.loading and '装载 T' or '回收 T') .. s.bee.tier .. ' 蜂群'
     end
@@ -4043,7 +4030,37 @@ local function phase(b, s)
         return '等待 T' .. s.request.tier .. ' 蜂群'
     end
     if b.phase == 'wait' and not b.granted then
-        return '等待凝聚物'
+        if b.admitting then
+            for _, address in ipairs(e.s.admission.members) do
+                if e.s.arrays[address].batch.phase ~= 'wait' then
+                    return '等待其他阵列取料'
+                end
+            end
+            return '核对原料'
+        end
+        local demand = 0
+        for _, amount in pairs(b.reserve or {}) do
+            demand = demand + amount
+        end
+        if demand > e.cfg.fieldLimit then
+            return '场强容量不足',
+                string.format(
+                    '本批需要 %.0f L，场强容量仅 %.0f L；按 Ctrl+C 暂停，提高约束场强度后续做。',
+                    demand,
+                    e.cfg.fieldLimit
+                )
+        end
+        if not e.free or e.resourceScan then
+            return '核对凝聚物库存'
+        end
+        for id, amount in pairs(b.reserve or {}) do
+            if amount > (e.free[id] or 0) then
+                return '等待凝聚物'
+            end
+        end
+        if not e.resourcesFresh then
+            return '核对凝聚物库存'
+        end
     end
     return phases[b.phase]
 end
@@ -4245,7 +4262,7 @@ function G:runtime(e, refill)
             local s = e.s.arrays[r.address]
             local b = s and s.batch
             local label = e.errors[r.address] and '已暂停'
-                or b and phase(b, s)
+                or b and phase(e, b, s)
                 or e.status[r.address]
                 or '空闲'
             self:put(2, y, prefix .. self:recordName(e.cfg, 'arrays', r), 19, ink.cyan, bg)
@@ -4312,19 +4329,19 @@ function G:runtime(e, refill)
         elseif self.tab == 2 then
             local s = e.s.arrays[row.address]
             local b = s and s.batch
+            local label, explanation
+            if b then
+                label, explanation = phase(e, b, s)
+            end
+            local detail = e.errors[row.address]
+                or b and (b.phase == 'wait' or b.phase == 'return') and (explanation or label)
+                or e.status[row.address]
+                or label
+                or '等待分配订单'
+            local lines = self.u.wlen(detail) > w - 3 and 2 or 1
             self:put(2, h - 5, row.address, w - 3, ink.cyan)
-            self:wrap(
-                2,
-                h - 4,
-                e.errors[row.address]
-                    or e.status[row.address]
-                    or b and phase(b, s)
-                    or '等待分配订单',
-                w - 3,
-                2,
-                e.errors[row.address] and ink.red or ink.text
-            )
-            if not e.errors[row.address] then
+            self:wrap(2, h - 4, detail, w - 3, lines, e.errors[row.address] and ink.red or ink.text)
+            if not e.errors[row.address] and lines == 1 then
                 local leases = {}
                 for tier = 1, 10 do
                     local c = s and s.lease and s.lease[tier]
@@ -4418,7 +4435,7 @@ function G:arrayPanel(e, x, top, width, bottom)
         x,
         top + 3,
         e.errors[a.address] and '已暂停 / 暂停前进度'
-            or (b and phase(b, s) or e.status[a.address] or '空闲')
+            or (b and phase(e, b, s) or e.status[a.address] or '空闲')
                 .. '  |  '
                 .. (tier and '蜂群 T' .. tier or '未装载蜂群'),
         width,
@@ -4470,7 +4487,9 @@ function G:arrayPanel(e, x, top, width, bottom)
         else
             local status = '空闲'
             if worker then
-                if b.phase == 'run' then
+                if b.phase == 'return' then
+                    status = '本批完成'
+                elseif b.phase == 'run' then
                     status = observed and '本批完成' or '待读取'
                 else
                     local cached = (e.nodeCache or {})[address]
@@ -5292,8 +5311,15 @@ files[#files + 1] = {
 local R = {}
 R.__index = R
 function R.new(engine)
-    local self =
-        setmetatable({ e = engine, materials = {}, bands = {}, detail = {}, returns = {} }, R)
+    local self = setmetatable({
+        e = engine,
+        materials = {},
+        bands = {},
+        detail = {},
+        returns = {},
+        initialized = {},
+        retry = {},
+    }, R)
     local e = engine
     e.s.refill = e.s.refill or { feeds = {}, generators = {}, active = {} }
     self.s = e.s.refill
@@ -5305,7 +5331,10 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
-        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {}, retry = {} }
+        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {} }
+        local s = self.s.feeds[f.id]
+        s.initialized, s.retry = nil, nil
+        self.retry[f.id] = {}
         assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
@@ -5377,14 +5406,14 @@ function R:observe(f)
             local m = self.materials[c.material]
             local pending = s.pending[i]
             local amount, capacity
-            if not s.initialized or pending and not pending.finish then
+            if not self.initialized[f.id] or pending and not pending.finish then
                 amount, capacity = self:cell(c)
             end
             -- A machine can start between the earlier machine sample and this cell read.
-            if not s.initialized or pending and not pending.finish and amount < m.unit then
+            if not self.initialized[f.id] or pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
             end
-            if not s.initialized and not pending then
+            if not self.initialized[f.id] and not pending then
                 local busy = false
                 for _, g in ipairs(e.cfg.generators) do
                     if g.feed == f.id and self.s.generators[g.address].busy then
@@ -5422,16 +5451,14 @@ function R:observe(f)
                         end
                     end
                 end
-            elseif amount and amount >= m.unit then
+            end
+            if not s.pending[i] and amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
                 e.dirty = true
             end
         end
     end
-    if not s.initialized then
-        s.initialized = true
-        e.dirty = true
-    end
+    self.initialized[f.id] = true
 end
 
 function R:receive(f)
@@ -5471,7 +5498,7 @@ function R:receive(f)
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
-                s.retry[task.index] = e.now + 5
+                self.retry[f.id][task.index] = e.now + 5
             end
             s.loading = nil
             e.log:finish(owner)
@@ -5568,7 +5595,7 @@ function R:scan()
                     self.s.active[c.material]
                     and forecast < target
                     and not s.pending[i]
-                    and e.now >= (s.retry[i] or 0)
+                    and e.now >= (self.retry[f.id][i] or 0)
                 then
                     local _, cap = self:cell(c)
                     if capacity + cap <= e.cfg.fieldLimit then

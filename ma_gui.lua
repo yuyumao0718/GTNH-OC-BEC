@@ -301,7 +301,7 @@ local phases = {
     ['return'] = '加工完成',
 }
 
-local function phase(b, s)
+local function phase(e, b, s)
     if s and s.bee then
         return (s.bee.loading and '装载 T' or '回收 T') .. s.bee.tier .. ' 蜂群'
     end
@@ -309,7 +309,37 @@ local function phase(b, s)
         return '等待 T' .. s.request.tier .. ' 蜂群'
     end
     if b.phase == 'wait' and not b.granted then
-        return '等待凝聚物'
+        if b.admitting then
+            for _, address in ipairs(e.s.admission.members) do
+                if e.s.arrays[address].batch.phase ~= 'wait' then
+                    return '等待其他阵列取料'
+                end
+            end
+            return '核对原料'
+        end
+        local demand = 0
+        for _, amount in pairs(b.reserve or {}) do
+            demand = demand + amount
+        end
+        if demand > e.cfg.fieldLimit then
+            return '场强容量不足',
+                string.format(
+                    '本批需要 %.0f L，场强容量仅 %.0f L；按 Ctrl+C 暂停，提高约束场强度后续做。',
+                    demand,
+                    e.cfg.fieldLimit
+                )
+        end
+        if not e.free or e.resourceScan then
+            return '核对凝聚物库存'
+        end
+        for id, amount in pairs(b.reserve or {}) do
+            if amount > (e.free[id] or 0) then
+                return '等待凝聚物'
+            end
+        end
+        if not e.resourcesFresh then
+            return '核对凝聚物库存'
+        end
     end
     return phases[b.phase]
 end
@@ -511,7 +541,7 @@ function G:runtime(e, refill)
             local s = e.s.arrays[r.address]
             local b = s and s.batch
             local label = e.errors[r.address] and '已暂停'
-                or b and phase(b, s)
+                or b and phase(e, b, s)
                 or e.status[r.address]
                 or '空闲'
             self:put(2, y, prefix .. self:recordName(e.cfg, 'arrays', r), 19, ink.cyan, bg)
@@ -578,19 +608,19 @@ function G:runtime(e, refill)
         elseif self.tab == 2 then
             local s = e.s.arrays[row.address]
             local b = s and s.batch
+            local label, explanation
+            if b then
+                label, explanation = phase(e, b, s)
+            end
+            local detail = e.errors[row.address]
+                or b and (b.phase == 'wait' or b.phase == 'return') and (explanation or label)
+                or e.status[row.address]
+                or label
+                or '等待分配订单'
+            local lines = self.u.wlen(detail) > w - 3 and 2 or 1
             self:put(2, h - 5, row.address, w - 3, ink.cyan)
-            self:wrap(
-                2,
-                h - 4,
-                e.errors[row.address]
-                    or e.status[row.address]
-                    or b and phase(b, s)
-                    or '等待分配订单',
-                w - 3,
-                2,
-                e.errors[row.address] and ink.red or ink.text
-            )
-            if not e.errors[row.address] then
+            self:wrap(2, h - 4, detail, w - 3, lines, e.errors[row.address] and ink.red or ink.text)
+            if not e.errors[row.address] and lines == 1 then
                 local leases = {}
                 for tier = 1, 10 do
                     local c = s and s.lease and s.lease[tier]
@@ -684,7 +714,7 @@ function G:arrayPanel(e, x, top, width, bottom)
         x,
         top + 3,
         e.errors[a.address] and '已暂停 / 暂停前进度'
-            or (b and phase(b, s) or e.status[a.address] or '空闲')
+            or (b and phase(e, b, s) or e.status[a.address] or '空闲')
                 .. '  |  '
                 .. (tier and '蜂群 T' .. tier or '未装载蜂群'),
         width,
@@ -736,7 +766,9 @@ function G:arrayPanel(e, x, top, width, bottom)
         else
             local status = '空闲'
             if worker then
-                if b.phase == 'run' then
+                if b.phase == 'return' then
+                    status = '本批完成'
+                elseif b.phase == 'run' then
                     status = observed and '本批完成' or '待读取'
                 else
                     local cached = (e.nodeCache or {})[address]

@@ -220,7 +220,6 @@ function E:start()
         self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
         local s = self.s.arrays[a.address]
         s.counts = s.counts or {}
-        s.blocked = nil
         for _, n in ipairs(a.nodes) do
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
@@ -945,19 +944,14 @@ function E:bees(a, s, want)
         if not self.log:step(owner, box.inventory, port, slot, 1, true) then
             return false
         end
-        b.phase = 'io'
+        b.phase = 'back'
         self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    if b.phase == 'io' then
-        b.phase = 'back'
-        if self:pulse() then
-            return false
-        end
-    end
-    if b.phase == 'back' then
+    -- Existing checkpoints can still name the return wait 'io'.
+    if b.phase == 'back' or b.phase == 'io' then
         if not self.log:step(owner, port, box.inventory, 7, slot) then
             return false
         end
@@ -1229,13 +1223,6 @@ function E:array(a)
                 return
             end
             self:bees(a, s, nil)
-            self.status[a.address] = self.U.total(b.reserve) > self.cfg.fieldLimit
-                    and string.format(
-                        '凝聚物需求 %.0f L 超过场强容量 %.0f L；请按 Ctrl+C 暂停，提高约束场强度后续做',
-                        self.U.total(b.reserve),
-                        self.cfg.fieldLimit
-                    )
-                or '等待凝聚物'
             return
         end
         self:filters(a, meta.unit)

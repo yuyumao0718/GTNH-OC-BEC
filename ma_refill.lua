@@ -2,8 +2,15 @@
 local R = {}
 R.__index = R
 function R.new(engine)
-    local self =
-        setmetatable({ e = engine, materials = {}, bands = {}, detail = {}, returns = {} }, R)
+    local self = setmetatable({
+        e = engine,
+        materials = {},
+        bands = {},
+        detail = {},
+        returns = {},
+        initialized = {},
+        retry = {},
+    }, R)
     local e = engine
     e.s.refill = e.s.refill or { feeds = {}, generators = {}, active = {} }
     self.s = e.s.refill
@@ -15,7 +22,10 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
-        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {}, retry = {} }
+        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {} }
+        local s = self.s.feeds[f.id]
+        s.initialized, s.retry = nil, nil
+        self.retry[f.id] = {}
         assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
         for i, c in ipairs(f.cells) do
             local loading = self.s.feeds[f.id].loading
@@ -87,14 +97,14 @@ function R:observe(f)
             local m = self.materials[c.material]
             local pending = s.pending[i]
             local amount, capacity
-            if not s.initialized or pending and not pending.finish then
+            if not self.initialized[f.id] or pending and not pending.finish then
                 amount, capacity = self:cell(c)
             end
             -- A machine can start between the earlier machine sample and this cell read.
-            if not s.initialized or pending and not pending.finish and amount < m.unit then
+            if not self.initialized[f.id] or pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
             end
-            if not s.initialized and not pending then
+            if not self.initialized[f.id] and not pending then
                 local busy = false
                 for _, g in ipairs(e.cfg.generators) do
                     if g.feed == f.id and self.s.generators[g.address].busy then
@@ -132,16 +142,14 @@ function R:observe(f)
                         end
                     end
                 end
-            elseif amount and amount >= m.unit then
+            end
+            if not s.pending[i] and amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
                 e.dirty = true
             end
         end
     end
-    if not s.initialized then
-        s.initialized = true
-        e.dirty = true
-    end
+    self.initialized[f.id] = true
 end
 
 function R:receive(f)
@@ -181,7 +189,7 @@ function R:receive(f)
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
-                s.retry[task.index] = e.now + 5
+                self.retry[f.id][task.index] = e.now + 5
             end
             s.loading = nil
             e.log:finish(owner)
@@ -278,7 +286,7 @@ function R:scan()
                     self.s.active[c.material]
                     and forecast < target
                     and not s.pending[i]
-                    and e.now >= (s.retry[i] or 0)
+                    and e.now >= (self.retry[f.id][i] or 0)
                 then
                     local _, cap = self:cell(c)
                     if capacity + cap <= e.cfg.fieldLimit then
