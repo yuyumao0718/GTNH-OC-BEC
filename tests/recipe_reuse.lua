@@ -160,6 +160,19 @@ print(
 for _, phase in ipairs({ 'admit', 'run' }) do
     local w = prepared(2, false, true)
     local target
+    if phase == 'admit' then
+        local address = w.cfg.arrays[1].nodes[2].address
+        local enable = w.components[address].setWorkAllowed
+        w.components[address].setWorkAllowed = function(value)
+            enable(value)
+            if value then
+                w.advance()
+            end
+        end
+        w.e.io.pulse = function()
+            return w.nodes[address].active
+        end
+    end
     for _ = 1, 2000 do
         w.tick()
         for _, s in pairs(w.state.arrays) do

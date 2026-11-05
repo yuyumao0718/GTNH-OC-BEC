@@ -1754,33 +1754,26 @@ function E:recover(a, s)
     self.save()
 end
 
-function E:intakes()
+function E:recoveryIntakes()
     local pending = {}
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
         if b and b.phase == 'admit' and not self.errors[a.address] then
             for _, w in ipairs(b.workers) do
                 local cached = self:worker(w)
-                if
-                    not w.accepted
-                    and not cached.accepted
-                    and (
-                        not cached.intake and self.maxParallel[w.address] ~= w.count
-                        or cached.verifyRecipe
-                    )
-                then
+                if not w.accepted and not cached.accepted and cached.verifyRecipe then
                     pending[#pending + 1] = w.address
                 end
             end
         end
     end
-    self.intakeNodes = {}
+    self.recoveryNodes = {}
     if #pending > 0 then
-        local first = (self.intakeCursor or 0) % #pending
+        local first = (self.recoveryCursor or 0) % #pending
         for offset = 1, math.min(4, #pending) do
-            self.intakeNodes[pending[(first + offset - 1) % #pending + 1]] = true
+            self.recoveryNodes[pending[(first + offset - 1) % #pending + 1]] = true
         end
-        self.intakeCursor = first + math.min(4, #pending)
+        self.recoveryCursor = first + math.min(4, #pending)
     end
 end
 
@@ -1824,13 +1817,18 @@ function E:array(a)
     if b.phase == 'admit' then
         local all = true
         local assigned = 0
+        local pending, verified = {}, true
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
             if w.accepted or cached.accepted then
                 assigned = assigned + w.count
             elseif
-                cached.verifyRecipe and not (self.intakeNodes and self.intakeNodes[w.address])
+                cached.verifyRecipe and not (self.recoveryNodes and self.recoveryNodes[w.address])
             then
+                all = false
+                verified = false
+            elseif cached.ready then
+                pending[#pending + 1] = w
                 all = false
             else
                 local n = self.io.proxy(w.address)
@@ -1890,19 +1888,11 @@ function E:array(a)
                     end
                     cached.accepted = true
                 else
-                    if
-                        not cached.intake
-                        and (
-                            self.maxParallel[w.address] == w.count
-                            or self.intakeNodes and self.intakeNodes[w.address]
-                        )
-                    then
-                        if self.maxParallel[w.address] ~= w.count then
-                            n.setMaxParallel(w.count)
-                            self.maxParallel[w.address] = w.count
-                        end
-                        n.setWorkAllowed(true)
-                        cached.intake = true
+                    -- An empty restored node has no old recipe left to verify.
+                    cached.verifyRecipe = nil
+                    if not cached.intake then
+                        cached.ready = true
+                        pending[#pending + 1] = w
                     end
                     all = false
                 end
@@ -1917,6 +1907,32 @@ function E:array(a)
             b.phase = 'wait'
             self.resourcesAt = nil
             self.save()
+        elseif verified and #pending > 0 and not self.intakePrepared then
+            self.intakePrepared = true
+            -- Match the mature controller: set all caps, then enable the whole array.
+            local deadline = self.processing and self.io.time() + 0.15
+            for index, w in ipairs(pending) do
+                local changed = self.maxParallel[w.address] ~= w.count
+                if changed then
+                    self.io.proxy(w.address).setMaxParallel(w.count)
+                    self.maxParallel[w.address] = w.count
+                end
+                if self:pulse() then
+                    return
+                end
+                -- Yield expensive preparation to active work; never split the enable loop.
+                if changed and deadline and index < #pending and self.io.time() >= deadline then
+                    return
+                end
+            end
+            for _, w in ipairs(pending) do
+                self.io.proxy(w.address).setWorkAllowed(true)
+                local cached = self:worker(w)
+                cached.intake, cached.ready = true, nil
+                if self:pulse() then
+                    return
+                end
+            end
         end
     elseif b.phase == 'collect' then
         self.status[a.address] = string.format(
@@ -2138,9 +2154,22 @@ function E:tick()
     if not self.errors[self.cfg.channels[1].id] then
         self:schedule()
     end
-    self:intakes()
+    self:recoveryIntakes()
+    self.intakePrepared = false
+    self.processing = false
+    -- Service existing work before preparing the next whole array for intake.
     for _, a in ipairs(self.arrays) do
-        if self:arrayTick(a) then
+        local b = self.s.arrays[a.address].batch
+        if (not b or b.phase ~= 'admit') and self:arrayTick(a) then
+            return
+        end
+        if b and b.phase == 'run' then
+            self.processing = true
+        end
+    end
+    for _, a in ipairs(self.arrays) do
+        local b = self.s.arrays[a.address].batch
+        if b and b.phase == 'admit' and self:arrayTick(a) then
             return
         end
     end

@@ -43,6 +43,16 @@ print('  PASS a short intake outside the representative is caught by the shared-
 do
     local w = make(1, 32, { nodes = 16 })
     local address = w.cfg.arrays[1].nodes[2].address
+    local enable = w.components[address].setWorkAllowed
+    w.components[address].setWorkAllowed = function(value)
+        enable(value)
+        if value then
+            w.advance()
+        end
+    end
+    w.e.io.pulse = function()
+        return w.nodes[address].active
+    end
     for _ = 1, 100 do
         w.tick()
         local b = w.state.arrays.a1.batch

@@ -57,8 +57,8 @@ for _, count in ipairs({ 6, 10, 30 }) do
             maxIntake = math.max(maxIntake, intake)
             if not benchmark then
                 assert(
-                    resource <= 4 and intake <= 12,
-                    'global per-pass limits must not grow with array count'
+                    resource <= 4 and (calls.setMaxParallel or 0) <= 16,
+                    'resource scans stay segmented; prepare at most one whole array per pass'
                 )
             end
             local done = 0
@@ -86,9 +86,7 @@ end
 if benchmark then
     return rows
 end
-print(
-    '  PASS six, ten and thirty arrays finish ordinary and fastTier orders with bounded global scan segments'
-)
+print('  PASS six, ten and thirty arrays finish with bounded resource scans and whole-array intake')
 
 do
     local w = world(6, false)
@@ -137,7 +135,7 @@ do
     w.components[first].hasWork = original
     w.finish(5000)
 end
-print('  PASS intake segments rotate past a delayed node without changing assigned recipe counts')
+print('  PASS a delayed intake node does not block preparing later arrays')
 
 do
     local w = world(10, false)
