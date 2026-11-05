@@ -19,13 +19,18 @@ for _, arrays in ipairs({ 1, 6, 10, 30 }) do
     w.finish(10000)
     assert(w.produced == count and w.admitted == count)
     for _, a in ipairs(w.cfg.arrays) do
-        assert(checks[a.address] == 1, 'one intake sample per array')
+        assert(
+            (checks[a.address] or 0) == (a.address == w.cfg.arrays[1].address and 1 or 0),
+            'one sample for the newly learned recipe'
+        )
     end
     for _, n in pairs(w.nodes) do
         assert(n.count == 1 or n.count == 2, "keep each node's own allocation")
     end
 end
-print('  PASS 1/6/10/30 arrays verify one sample each and preserve unequal allocations')
+print(
+    '  PASS 1/6/10/30 arrays learn from one shared recipe sample and preserve unequal allocations'
+)
 
 do
     local w = make(1, 32, { nodes = 16 })
@@ -34,11 +39,13 @@ do
     p.setMaxParallel = function()
         return original(1)
     end
-    local ok, err = pcall(w.finish, 1000)
-    assert(not ok and tostring(err):find('公共原料子网余量', 1, true))
+    for _ = 1, 100 do
+        w.tick()
+    end
+    assert(not next(w.e.errors) and w.state.admission and w.closed)
     assert(w.produced == 0, 'leftover input must block startup')
 end
-print('  PASS a short intake outside the representative is caught by the shared-network total')
+print('  PASS a short intake outside the representative waits for the shared-network remainder')
 
 do
     local w = make(1, 32, { nodes = 16 })

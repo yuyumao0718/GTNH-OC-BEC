@@ -27,17 +27,20 @@ function E.new(cfg, state, io, modules)
         observations = {},
         provided = {},
         beeChecked = {},
+        beeCounts = {},
         held = {},
         nodeCache = {},
         maxParallel = {},
-        intakeSample = {},
         now = 0,
         settled = {},
         filterNames = {},
         filterSlots = {},
-        healthAt = {},
         collectAt = {},
         poolSupport = {},
+        supported = {},
+        bands = {},
+        cells = {},
+        boxes = {},
     }, E)
     for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
         state[key] = state[key] or {}
@@ -51,10 +54,25 @@ function E.new(cfg, state, io, modules)
     end
     self.log = modules.Log.new(cfg, state, io.proxy, self.save, self.U)
     self.pools = self.U.index(cfg.beePools)
+    for _, b in ipairs(cfg.bands) do
+        for _, m in ipairs(self.M) do
+            if m.source == b.material then
+                self.bands[m.condensate] = true
+            end
+        end
+    end
+    for _, pool in ipairs(cfg.beePools) do
+        local cells = {}
+        for _, c in ipairs(pool.cells) do
+            cells[c.tier] = cells[c.tier] or c
+        end
+        self.cells[pool.id] = cells
+    end
     self.storage = io.proxy(cfg.storage)
     for _, a in ipairs(cfg.arrays) do
         if a.enabled then
             self.arrays[#self.arrays + 1] = a
+            self.boxes[a.address] = self.U.index(a.beeBoxes, 'box')
         end
     end
     self.byAddress = self.U.index(self.arrays, 'address')
@@ -64,6 +82,14 @@ end
 function E:items(address)
     local counts = self.I.inventory(self.io.proxy(address).getItemsInNetwork())
     return counts
+end
+
+function E:stockRead(refresh)
+    if refresh or self.stockAt ~= self.now then
+        self.stock = self.storage.getStoredCondensate()
+        self.stockAt = self.now
+    end
+    return self.stock
 end
 
 function E:subscribe(enabled)
@@ -168,6 +194,8 @@ function E:check()
     self:catalogsRead()
     local needed = 0
     for _, a in ipairs(self.arrays) do
+        local d = self.io.proxy(a.diode)
+        assert(d.hasWork() and d.isWorkAllowed(), '请先启动麦克斯韦门：' .. a.address)
         for _, id in ipairs({ a.loadPort, a.unloadPort }) do
             assert(
                 self.log:size(id) == 12,
@@ -314,9 +342,6 @@ function E:remaining(s, visit)
                 visit()
             end
         end
-        if self:pulse() then
-            return
-        end
     end
     return result
 end
@@ -337,10 +362,16 @@ function E:resources(force)
             end
         end
     end
+    -- A complete ledger already covering every waiting batch needs no startup rescan.
     if
         not self.resourceScan
         and not force
-        and self.io.time() < (self.resourcesAt or -math.huge)
+        and (
+            self.io.time() < (self.resourcesAt or -math.huge)
+            or self.resourcesFresh
+                and next(self.waiting)
+                and self.U.fits(self.free, self.waiting)
+        )
     then
         return true
     end
@@ -358,13 +389,10 @@ function E:resources(force)
             end
             for _, a in ipairs(self.arrays) do
                 local remaining = self:remaining(self.s.arrays[a.address], visit)
-                if not remaining then
-                    return false
-                end
                 self.U.add(reserved, remaining)
             end
             -- Publish only a complete ledger; no new grants are issued during this scan.
-            local stock = self.storage.getStoredCondensate()
+            local stock = self:stockRead(force)
             self.stock, self.reserved = stock, reserved
             self.free = {}
             for k, v in pairs(self.stock) do
@@ -412,11 +440,7 @@ function E:grant(b)
 end
 
 function E:beeCells(a)
-    local cells = {}
-    for _, c in ipairs(self.pools[a.beePool].cells) do
-        cells[c.tier] = cells[c.tier] or c
-    end
-    return cells
+    return self.cells[a.beePool]
 end
 
 function E:poolSupports(a, meta)
@@ -450,12 +474,7 @@ function E:poolSupports(a, meta)
 end
 
 function E:beeAccess(a, c)
-    for _, box in ipairs(a.beeBoxes) do
-        if box.box == c.box then
-            return box
-        end
-    end
-    error('阵列缺少蜂群箱连接：' .. a.address .. ' / 箱子 ' .. c.box)
+    return self.boxes[a.address][c.box]
 end
 
 function E:beeCount(a, c, value)
@@ -790,27 +809,51 @@ function E:admissionTick()
     if not admission then
         return
     end
-    local count = 0
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
-        if self.errors[id] or b.phase ~= 'wait' then
+        if self.errors[id] then
             return
         end
-        count = count + b.count
+        if b.phase == 'admit' then
+            for _, w in ipairs(b.workers) do
+                local cached = self:worker(w)
+                if not w.accepted and not cached.accepted and not cached.intake then
+                    return
+                end
+                if cached.verifyRecipe then
+                    return
+                end
+            end
+        end
     end
-    count = count - (admission.previous or 0)
     local queued = self.s.queue[1]
     local remaining = queued
             and self.U.scale(self.s.patterns[queued.key].pattern.inputs, queued.count)
         or {}
-    assert(
-        count == admission.count
-            and self.U.equal(self:items(self.cfg.channels[1].buffer), remaining),
-        '节点取料或公共原料子网余量与订单不一致；请核对实际原料和节点并行能力后续做'
-    )
+    if not self.U.equal(self:items(self.cfg.channels[1].buffer), remaining) then
+        return
+    end
+    -- The gate is locked and all consumers have fixed caps; AE confirms the whole allocation.
+    for _, id in ipairs(admission.members) do
+        local b = self.s.arrays[id].batch
+        for _, w in ipairs(b.workers) do
+            if not w.accepted and not self:worker(w).accepted then
+                self.io.proxy(w.address).setWorkAllowed(false)
+            end
+        end
+    end
     local ready = {}
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
+        for _, w in ipairs(b.workers) do
+            self:recipe(b, w)
+            if b.collection then
+                w.accepted = true
+            end
+            self:worker(w).accepted = true
+        end
+        b.reserve = self.U.scale(self.s.patterns[b.key].unit, b.count)
+        b.phase = 'wait'
         b.admitting = nil
         if b.collection then
             b.collection.elapsed = 0
@@ -824,8 +867,41 @@ function E:admissionTick()
         end
     end
     self.s.admission = nil
+    self.resourcesAt = nil
     self.save()
     return #ready > 0 and ready or nil
+end
+
+function E:recipe(b, w, verify)
+    local meta = self.s.patterns[b.key]
+    local own = self.s.patterns[w.key or b.key]
+    if not own.unit or verify then
+        local n = self.io.proxy(w.address)
+        local count = n.getParallelRecipesInProgress()
+        if verify then
+            assert(
+                count == w.count and n.getWorkProgress() == 0,
+                '节点实际取料份数与续做分配不一致，或已开始加工：'
+                    .. w.address
+            )
+        end
+        local unit = {}
+        for name, amount in pairs(n.getRequiredCondensate()) do
+            unit[name] = amount / count
+        end
+        local steps = self.N.steps(n.getRecipeSteps())
+        assert(
+            not own.unit or self.U.equal(own.unit, unit) and self.U.equal(own.steps, steps),
+            '节点配方与续做记录不一致：' .. w.address
+        )
+        own.unit, own.steps = unit, steps
+    end
+    if w.key then
+        assert(
+            self.U.equal(meta.unit, own.unit) and self.U.equal(meta.steps, own.steps),
+            '算力奇点配方与已记录的处理样板不一致'
+        )
+    end
 end
 
 function E:filters(a, unit)
@@ -849,31 +925,21 @@ function E:filters(a, unit)
     self.filterNames[a.address] = names
 end
 
-function E:health(a)
-    if self.now - (self.healthAt[a.address] or -math.huge) < 10 then
-        return
-    end
-    local d = self.io.proxy(a.diode)
-    assert(d.hasWork() and d.isWorkAllowed(), '麦克斯韦门未运行')
-    self.healthAt[a.address] = self.now
-end
-
 function E:support(a, meta)
-    local bands = {}
-    for _, b in ipairs(self.cfg.bands) do
-        for _, m in ipairs(self.M) do
-            if m.source == b.material then
-                bands[m.condensate] = true
-            end
-        end
+    local checked = self.supported[meta]
+    if checked and checked[a.beePool] then
+        return
     end
     for name in pairs(meta.unit) do
         assert(
-            bands[name],
+            self.bands[name],
             '请在第 1 页“预缓存纠缠流体配置”中启用 ' .. self.M.name(name)
         )
     end
     assert(self:poolSupports(a, meta), '蜂群池中没有适用于该配方的蜂群')
+    checked = checked or {}
+    checked[a.beePool] = true
+    self.supported[meta] = checked
 end
 
 function E:bees(a, s, want)
@@ -962,11 +1028,25 @@ function E:bees(a, s, want)
         end
     end
     if b.phase == 'sync' then
-        local provided = n.getProvidedTier()
-        current = provided and provided.tier
+        local count
+        if b.loading then
+            local provided = n.getProvidedTier()
+            current = provided and provided.tier
+            if current ~= b.tier then
+                return false
+            end
+            local key = a.beePool .. ':' .. cellKey(cell)
+            count = self.beeCounts[key] or n.getAvailableNanites()
+            if count == 0 then
+                return false
+            end
+            self.beeCounts[key] = count
+        else
+            count = n.getAvailableNanites()
+            current = nil
+        end
         self.provided[a.address] = current
-        local count = n.getAvailableNanites()
-        if b.loading and current == b.tier and count > 0 or not b.loading and count == 0 then
+        if b.loading or count == 0 then
             if b.loading then
                 s.counts[b.tier] = count
                 self:beeCount(a, cell, s.counts[b.tier])
@@ -993,6 +1073,7 @@ function E:recover(a, s)
         return
     end
     if b.phase == 'admit' then
+        self.recoveringIntake = true
         for _, w in ipairs(b.workers) do
             if not w.accepted then
                 self:worker(w).verifyRecipe = true
@@ -1043,6 +1124,9 @@ function E:recover(a, s)
 end
 
 function E:recoveryIntakes()
+    if not self.recoveringIntake then
+        return
+    end
     local pending = {}
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
@@ -1062,13 +1146,15 @@ function E:recoveryIntakes()
             self.recoveryNodes[pending[(first + offset - 1) % #pending + 1]] = true
         end
         self.recoveryCursor = first + math.min(4, #pending)
+    else
+        self.recoveringIntake = nil
+        self.recoveryNodes = nil
     end
 end
 
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
-    self:health(a)
     if not b or b.phase ~= 'run' then
         self.observations[a.address] = nil
     end
@@ -1103,123 +1189,48 @@ function E:array(a)
         end
     end
     if b.phase == 'admit' then
-        local all = true
-        local assigned = 0
         local pending, verified = {}, true
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
-            if w.accepted or cached.accepted then
-                assigned = assigned + w.count
-            elseif
-                cached.verifyRecipe and not (self.recoveryNodes and self.recoveryNodes[w.address])
-            then
-                all = false
-                verified = false
-            elseif cached.ready then
-                pending[#pending + 1] = w
-                all = false
-            else
+            if cached.verifyRecipe and self.recoveryNodes[w.address] then
                 local n = self.io.proxy(w.address)
                 if n.hasWork() then
                     n.setWorkAllowed(false)
-                    local own = self.s.patterns[w.key or b.key]
-                    local sample = self.s.admission or b
-                    -- Per-node caps and the shared-network remainder verify the full allocation.
-                    local count = w.count
-                    if
-                        self.intakeSample[a.address] ~= sample
-                        or not own.unit
-                        or cached.verifyRecipe
-                    then
-                        count = n.getParallelRecipesInProgress()
-                        assert(
-                            n.getWorkProgress() == 0 and count == w.count,
-                            '节点实际取料份数与分配值不一致，或已开始加工；请核对节点的并行能力与控制设置'
-                        )
-                        self.intakeSample[a.address] = sample
-                    end
-                    assigned = assigned + count
-                    if not own.unit or cached.verifyRecipe then
-                        local required = n.getRequiredCondensate()
-                        local steps = self.N.steps(n.getRecipeSteps())
-                        local unit = {}
-                        for k, v in pairs(required) do
-                            unit[k] = v / count
-                        end
-                        assert(self.U.total(unit) > 0, '未读取到节点的凝聚物需求')
-                        assert(
-                            not own.unit
-                                or self.U.equal(own.unit, unit)
-                                    and self.U.equal(own.steps, steps),
-                            '节点配方与已记录的处理样板不一致'
-                        )
-                        assert(
-                            not w.key
-                                or not meta.unit
-                                or self.U.equal(meta.unit, unit)
-                                    and self.U.equal(meta.steps, steps),
-                            '算力奇点配方与已记录的处理样板不一致'
-                        )
-                        if not own.unit then
-                            own.unit, own.steps = unit, steps
-                            self.save()
-                        end
-                        cached.verifyRecipe = nil
-                    end
+                    self:recipe(b, w, true)
+                    cached.accepted = true
                     if w.key then
-                        assert(
-                            self.U.equal(meta.unit, own.unit)
-                                and self.U.equal(meta.steps, own.steps),
-                            '算力奇点配方与已记录的处理样板不一致'
-                        )
                         w.accepted = true
                     end
-                    cached.accepted = true
-                else
-                    -- An empty restored node has no old recipe left to verify.
-                    cached.verifyRecipe = nil
-                    if not cached.intake then
-                        cached.ready = true
-                        pending[#pending + 1] = w
-                    end
-                    all = false
                 end
+                cached.verifyRecipe = nil
                 if self:pulse() then
                     return
                 end
             end
+            if cached.verifyRecipe then
+                verified = false
+            elseif not w.accepted and not cached.accepted and not cached.intake then
+                pending[#pending + 1] = w
+            end
         end
-        if all then
-            assert(assigned == b.count, '节点取料总数与分配数量不一致')
-            b.reserve = self.U.scale(meta.unit, assigned)
-            b.phase = 'wait'
-            self.resourcesAt = nil
-            self.save()
-        elseif verified and #pending > 0 and not self.intakePrepared then
+        if verified and #pending > 0 and not self.intakePrepared then
             self.intakePrepared = true
-            -- Match the mature controller: set all caps, then enable the whole array.
             local deadline = self.processing and self.io.time() + 0.15
             for index, w in ipairs(pending) do
-                local changed = self.maxParallel[w.address] ~= w.count
-                if changed then
+                if self.maxParallel[w.address] ~= w.count then
                     self.io.proxy(w.address).setMaxParallel(w.count)
                     self.maxParallel[w.address] = w.count
-                end
-                if self:pulse() then
-                    return
-                end
-                -- Yield expensive preparation to active work; never split the enable loop.
-                if changed and deadline and index < #pending and self.io.time() >= deadline then
-                    return
+                    if self:pulse() then
+                        return
+                    end
+                    if deadline and index < #pending and self.io.time() >= deadline then
+                        return
+                    end
                 end
             end
             for _, w in ipairs(pending) do
                 self.io.proxy(w.address).setWorkAllowed(true)
-                local cached = self:worker(w)
-                cached.intake, cached.ready = true, nil
-                if self:pulse() then
-                    return
-                end
+                self:worker(w).intake = true
             end
         end
     elseif b.phase == 'collect' then
@@ -1261,7 +1272,6 @@ function E:array(a)
             end
             b.fixed = candidate and self.N.fastTier(meta.steps, cells, s.counts, parallel) or nil
             b.fastChecked = true
-            self.save()
         end
         local tier = b.fixed or self.N.tier(meta.steps[1].tier, cells)
         if self:bees(a, s, tier) then
@@ -1302,9 +1312,6 @@ function E:array(a)
                 end
             else
                 cached.done = true
-            end
-            if self:pulse() then
-                return
             end
         end
         self.observations[a.address] = views
@@ -1374,6 +1381,8 @@ function E:drain()
 end
 
 function E:arrayTick(a)
+    local s = self.s.arrays[a.address]
+    local processing = s.batch and s.batch.phase == 'run'
     if not self.errors[a.address] then
         local ok, err = pcall(self.array, self, a)
         if not ok then
@@ -1388,16 +1397,31 @@ function E:arrayTick(a)
             end
         end
     end
-    return self:pulse()
+    if processing or s.bee then
+        return self:pulse()
+    end
+end
+
+function E:prepareArrays()
+    local deadline = self.io.time() + 0.15
+    for _, a in ipairs(self.arrays) do
+        local b = self.s.arrays[a.address].batch
+        if b and b.phase == 'wait' and not b.admitting then
+            if self:arrayTick(a) then
+                return true
+            end
+            if b.phase == 'run' then
+                self.processing = true
+            end
+            if self.io.time() >= deadline then
+                break
+            end
+        end
+    end
 end
 
 function E:tick()
     self.now = self.io.time()
-    self.resourcesFresh = false
-    if self.now - (self.fieldHealthAt or -math.huge) >= 10 then
-        assert(self.storage.isWorkAllowed() and self.storage.hasWork(), '约束场未运行')
-        self.fieldHealthAt = self.now
-    end
     if not self.ready then
         local p = self.storage.getWorkProgress()
         if p < self.fieldProgress then
@@ -1448,12 +1472,15 @@ function E:tick()
     -- Service existing work before preparing the next whole array for intake.
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
-        if (not b or b.phase ~= 'admit') and self:arrayTick(a) then
+        if (not b or b.phase ~= 'admit' and b.phase ~= 'wait') and self:arrayTick(a) then
             return
         end
         if b and b.phase == 'run' then
             self.processing = true
         end
+    end
+    if self:prepareArrays() then
+        return
     end
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
@@ -1466,11 +1493,7 @@ function E:tick()
         if not self.resourcesFresh and not self:resources(true) then
             return
         end
-        for _, id in ipairs(admitted) do
-            if self.s.arrays[id].batch.phase == 'wait' and self:arrayTick(self.byAddress[id]) then
-                return
-            end
-        end
+        self:prepareArrays()
     end
 end
 return E

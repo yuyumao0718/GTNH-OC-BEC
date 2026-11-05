@@ -72,10 +72,12 @@ do
     local pulses = 0
     w.e.io.pulse = function()
         pulses = pulses + 1
-        return pulses == 5
+        return pulses == 1
     end
     assert(not w.e:resources(true))
-    assert(not w.e:resources(true) and pulses == 5)
+    assert(w.e:pulse() and pulses == 1)
+    w.e:pause()
+    assert(not w.e.resourceScan)
     assert(
         U.equal(before.reserved, w.e.reserved)
             and U.equal(before.free, w.e.free)

@@ -245,7 +245,7 @@ do
     w.finish()
     local key = next(w.state.patterns)
     w.cfg.beePools[1].cells[2] = nil
-    w.e.poolSupport = {}
+    w.boot(w.state)
     w.state.queue = { { key = key, count = 1, id = 30 } }
     w.e:array(w.cfg.arrays[1])
     assert(w.e.status.a1:find('当前待分配订单', 1, true))

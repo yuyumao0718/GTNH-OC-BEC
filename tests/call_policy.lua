@@ -132,13 +132,13 @@ do
         w.e:array(a)
     end
     local first = calls[a.nodes[1].address]
+    assert(not first.getRequiredCondensate and first.setWorkAllowed == 1)
+    w.e:admissionTick()
     assert(first.getRequiredCondensate == 1 and first.setWorkAllowed == 2)
     delayed.hasWork = actual
     w.finish()
 end
-print(
-    '  PASS delayed intake sets parallel once and accepted nodes stay closed while another node waits'
-)
+print('  PASS intake sets parallel once and AE completion closes nodes without hasWork probes')
 
 local function running()
     local w = make(1, 1600, { nodes = 16, stageTicks = 400 })
@@ -235,12 +235,10 @@ do
     local field = watch(w.components.storage, { 'getFieldStrength', 'hasWork', 'isWorkAllowed' })
     w.time = w.time + 201
     w.e:tick()
-    assert(not field.getFieldStrength and field.hasWork == 1 and field.isWorkAllowed == 1)
-    assert(
-        not calls.getCondensateFilterAt and not calls.getCondensateFilters and calls.hasWork == 1
-    )
+    assert(not next(field))
+    assert(not calls.getCondensateFilterAt and not calls.getCondensateFilters and not calls.hasWork)
 end
-print('  PASS field and gate keep running checks without strength or filter-slot rescans')
+print('  PASS field and gate do not repeat startup checks during runtime')
 
 do
     local w = make(1, 0)

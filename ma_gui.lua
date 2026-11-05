@@ -308,15 +308,10 @@ local function phase(e, b, s)
     if s and s.request then
         return '等待 T' .. s.request.tier .. ' 蜂群'
     end
+    if b.admitting then
+        return '节点取料'
+    end
     if b.phase == 'wait' and not b.granted then
-        if b.admitting then
-            for _, address in ipairs(e.s.admission.members) do
-                if e.s.arrays[address].batch.phase ~= 'wait' then
-                    return '等待其他阵列取料'
-                end
-            end
-            return '核对原料'
-        end
         local demand = 0
         for _, amount in pairs(b.reserve or {}) do
             demand = demand + amount
@@ -778,7 +773,13 @@ function G:arrayPanel(e, x, top, width, bottom)
                     local accepted = b.phase ~= 'admit'
                         or worker.accepted
                         or cached and cached.worker == worker and cached.accepted
-                    status = (accepted and '已取料 ' or '待取料 ') .. worker.count .. ' 份'
+                    status = (
+                        accepted and '已取料 '
+                        or cached and cached.intake and '取料中 '
+                        or '准备取料 '
+                    )
+                        .. worker.count
+                        .. ' 份'
                 end
             end
             self:put(x, y, '#' .. i .. '  ' .. status, width, ink.dim)

@@ -34,6 +34,7 @@ for version in ('lua52', 'lua53'):
     lua.execute('dofile(ROOT .. "tests/bee_transfers.lua")')
     lua.execute('dofile(ROOT .. "tests/bee_reuse.lua")')
     lua.execute('dofile(ROOT .. "tests/mature_intake.lua")')
+    lua.execute('dofile(ROOT .. "tests/intake_response.lua")')
     lua.execute('dofile(ROOT .. "tests/mature_flow.lua")')
     lua.execute('dofile(ROOT .. "tests/call_policy.lua")')
     lua.execute('dofile(ROOT .. "tests/segmented.lua")')

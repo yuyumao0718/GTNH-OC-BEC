@@ -506,7 +506,13 @@ test(
         for _ = 1, 100 do
             w.tick()
         end
-        assert(next(w.e.errors) and w.closed and w.produced == 0 and w.inputs.common > 0)
+        assert(
+            not next(w.e.errors)
+                and w.state.admission
+                and w.closed
+                and w.produced == 0
+                and w.inputs.common > 0
+        )
     end
 )
 test(
@@ -1015,8 +1021,8 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         else
             if action == 'mid-interrupt' then
                 assert(
-                    readsAfterSignal == 0 and #queued == 0,
-                    'Ctrl+C must stop before reading the next node'
+                    readsAfterSignal < #w.cfg.arrays[1].nodes and #queued == 0,
+                    'Ctrl+C must stop at the boundary of the current array'
                 )
             end
             assert(

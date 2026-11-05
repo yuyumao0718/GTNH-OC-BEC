@@ -144,24 +144,23 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     for _ = 1, 500 do
         w.tick()
         batch = w.state.arrays.a1.batch
-        if batch and batch.phase == 'wait' and batch.admitting then
+        if batch and batch.phase == 'admit' then
             break
         end
     end
-    assert(batch and batch.phase == 'wait' and batch.admitting)
+    assert(batch and batch.phase == 'admit' and batch.admitting)
     e, r = w.e, w.r
     e.io.proxy = function()
         error('rendering queried machine components')
     end
-    ui.tab, ui.selected[2], ui.arrayIndex, ui.nodeOnly = 2, 1, 1, false
+    ui.tab, ui.selected[2], ui.arrayIndex, ui.nodeOnly = 2, 1, 1, size[1] < 120
     ui:runtime(e, r)
     compareFull()
-    assert(text():find('等待其他阵列取料', 1, true))
+    assert(text():find('节点取料', 1, true) and text():find('取料中', 1, true))
     assert(not text():find('等待凝聚物', 1, true))
 
-    w.state.arrays.a2.batch.phase = 'wait'
-    ui:runtime(e, r)
-    assert(text():find('核对原料', 1, true))
+    batch.phase = 'wait'
+    batch.reserve = { entangled_neutronium = batch.count * 144 }
     batch.admitting, e.s.admission = nil, nil
     w.state.arrays.a2.batch.admitting = nil
     e.resourcesFresh, e.resourceScan = false, nil
@@ -234,7 +233,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
             assert(text():find('等待凝聚物', 1, true))
             assert(not text():find('核对凝聚物库存', 1, true))
             waiting = waiting + 1
-            if not e.resourcesFresh then
+            if e.stockAt < e.now then
                 betweenSamples = betweenSamples + 1
             end
         end

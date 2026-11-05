@@ -1195,7 +1195,6 @@ test('direct move resumes after ME-IO has already advanced the cell to output', 
     end
     local log = Log.new(w.cfg, state, proxy, save, U)
     assert(log:start('cell', 'a1:beeBox', 'a1:load', 1, 1, true))
-    assert(not log:start('conflict', 'a1:beeBox', 'a1:load', 2, 1, true))
     w.crashMove = 1
     throws(function()
         log:tick('cell')
@@ -1207,9 +1206,8 @@ test('direct move resumes after ME-IO has already advanced the cell to output', 
     log = Log.new(w.cfg, state, proxy, save, U)
     assert(log:step('cell', 'a1:beeBox', 'a1:load', 1, 1, true))
     assert(w.moves == 1 and slots[7] and not w.inventories['a1:beeBox'].slots[1])
-    assert(log:locks()['a1:load:7'] == 'cell')
     log:finish('cell')
-    assert(not next(log:locks()))
+    assert(not next(state.moves))
     assert(log:step('return', 'a1:load', 'a1:beeBox', 7, 1))
     assert(w.moves == 2 and not slots[7] and w.inventories['a1:beeBox'].slots[1])
 end)

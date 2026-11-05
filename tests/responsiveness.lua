@@ -59,6 +59,7 @@ e.io = {
         }
     end,
 }
+e.stockRead = dofile(ROOT .. 'ma_core.lua').stockRead
 local refill = R.new(e)
 refill:tick()
 calls = { cells = 0, generators = 0, stock = 0 }

@@ -125,7 +125,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
       for i=1,2000 do
         admission.tick()
         local b=admission.state.arrays.a1.batch
-        if b and b.phase=='wait' and b.admitting then break end
+        if b and b.phase=='admit' and admission.e.nodeCache['a1:n1'].intake then break end
       end
       assert(admission.state.arrays.a1.batch.admitting)
       ui.tab=2; ui.selected[2]=1; ui.arrayIndex=1

@@ -92,6 +92,7 @@ end
 function R:observe(f)
     local e = self.e
     local s = self.s.feeds[f.id]
+    local released = false
     for i, c in ipairs(f.cells) do
         if not s.loading or s.loading.index ~= i then
             local m = self.materials[c.material]
@@ -128,6 +129,7 @@ function R:observe(f)
                     end
                     if done then
                         s.pending[i] = nil
+                        released = true
                         e.dirty = true
                     end
                 elseif amount < m.unit then
@@ -150,6 +152,7 @@ function R:observe(f)
         end
     end
     self.initialized[f.id] = true
+    return released
 end
 
 function R:receive(f)
@@ -214,8 +217,9 @@ end
 function R:scan()
     local e = self.e
     self:generators()
+    local released = false
     for _, f in ipairs(e.cfg.feeds) do
-        self:observe(f)
+        released = self:observe(f) or released
         self:receive(f)
     end
     -- Accepted orders may still need condensate while a normal shutdown drains them.
@@ -231,7 +235,7 @@ function R:scan()
         end
     end
     -- Clearing a completed production claim must precede the matching stock read.
-    e.stock = e.storage.getStoredCondensate()
+    e:stockRead(released)
     local pending = {}
     for _, f in ipairs(e.cfg.feeds) do
         local s = self.s.feeds[f.id]

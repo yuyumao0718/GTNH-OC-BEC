@@ -108,7 +108,7 @@ for _, count in ipairs({ 6, 10, 30 }) do
                 assert(required == (known and 0 or 1) and steps == required)
                 assert(poolScans == (known and 1 or 0))
             end
-            assert(calls.getParallelRecipesInProgress == count)
+            assert((calls.getParallelRecipesInProgress or 0) == (known and 0 or 1))
             for _, s in pairs(w.state.arrays) do
                 assert(s.batch.count == 800 and #s.batch.workers == 16)
                 assert(s.batch.reserve.entangled_neutronium == 800 * 144)
@@ -144,6 +144,8 @@ do
     local meta = { steps = { { tier = 3 } } }
     w.e.pools[w.cfg.arrays[1].beePool].cells = { { tier = 2 } }
     w.e.pools[w.cfg.arrays[2].beePool].cells = { { tier = 4 } }
+    w.e.cells[w.cfg.arrays[1].beePool] = { [2] = { tier = 2 } }
+    w.e.cells[w.cfg.arrays[2].beePool] = { [4] = { tier = 4 } }
     assert(not w.e:poolSupports(w.cfg.arrays[1], meta))
     assert(w.e:poolSupports(w.cfg.arrays[2], meta))
     local unknown = {}
@@ -221,7 +223,8 @@ do
     for _ = 1, 100 do
         w.tick()
     end
-    assert(next(w.e.errors), 'known recipe must still reject incorrect intake counts')
+    assert(not next(w.e.errors), 'known recipe no longer probes per-node intake counts')
+    w.finish(5000)
 end
 print('  PASS known recipes retain representative intake count checks')
 

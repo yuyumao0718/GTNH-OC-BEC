@@ -1,4 +1,4 @@
--- Direct cell transfers. Keep both slots reserved until the move is acknowledged.
+-- Direct cell transfers. Record physical moves before issuing them for restart recovery.
 local L = {}
 L.__index = L
 function L.new(cfg, state, proxy, save, U)
@@ -29,40 +29,15 @@ function L:size(id)
     )
 end
 
-local function key(id, slot)
-    return id .. ':' .. slot
-end
-
-function L:locks()
-    local locks = {}
-    for owner, m in pairs(self.state.moves) do
-        for k in pairs(m.locks) do
-            locks[k] = owner
-        end
-    end
-    return locks
-end
-
 function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
     if self.state.moves[owner] then
         return true
-    end
-    local locks = { [key(from, sourceSlot)] = true, [key(to, targetSlot)] = true }
-    if ioSink then
-        locks[key(to, 7)] = true
-    end
-    local occupied = self:locks()
-    for k in pairs(locks) do
-        if occupied[k] then
-            return false
-        end
     end
     self.state.moves[owner] = {
         from = from,
         to = to,
         fromSlot = sourceSlot,
         toSlot = targetSlot,
-        locks = locks,
         ioSink = ioSink,
     }
     return true
@@ -108,9 +83,7 @@ function L:finish(owner)
 end
 
 function L:step(owner, from, to, sourceSlot, targetSlot, ioSink)
-    if not self:start(owner, from, to, sourceSlot, targetSlot, ioSink) then
-        return false
-    end
+    self:start(owner, from, to, sourceSlot, targetSlot, ioSink)
     return self:tick(owner)
 end
 return L

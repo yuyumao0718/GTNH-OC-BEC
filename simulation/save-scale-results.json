@@ -1,0 +1,122 @@
+[
+  {
+    "saveReplays": 66,
+    "saves": 160,
+    "normalNodeCloses": 96,
+    "filterWrites": 12,
+    "moveReplays": 48,
+    "fast": false,
+    "arrays": 6,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 42,
+    "saves": 94,
+    "normalNodeCloses": 96,
+    "filterWrites": 12,
+    "moveReplays": 24,
+    "fast": true,
+    "arrays": 6,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 66,
+    "saves": 264,
+    "normalNodeCloses": 160,
+    "filterWrites": 20,
+    "moveReplays": 80,
+    "fast": false,
+    "arrays": 10,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 42,
+    "saves": 154,
+    "normalNodeCloses": 160,
+    "filterWrites": 20,
+    "moveReplays": 40,
+    "fast": true,
+    "arrays": 10,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 66,
+    "saves": 784,
+    "normalNodeCloses": 480,
+    "filterWrites": 60,
+    "moveReplays": 240,
+    "fast": false,
+    "arrays": 30,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 42,
+    "saves": 454,
+    "normalNodeCloses": 480,
+    "filterWrites": 60,
+    "moveReplays": 120,
+    "fast": true,
+    "arrays": 30,
+    "lua": "lua52"
+  },
+  {
+    "fast": false,
+    "filterWrites": 12,
+    "normalNodeCloses": 96,
+    "arrays": 6,
+    "moveReplays": 48,
+    "saveReplays": 66,
+    "saves": 160,
+    "lua": "lua53"
+  },
+  {
+    "fast": true,
+    "filterWrites": 12,
+    "normalNodeCloses": 96,
+    "arrays": 6,
+    "moveReplays": 24,
+    "saveReplays": 42,
+    "saves": 94,
+    "lua": "lua53"
+  },
+  {
+    "fast": false,
+    "filterWrites": 20,
+    "normalNodeCloses": 160,
+    "arrays": 10,
+    "moveReplays": 80,
+    "saveReplays": 66,
+    "saves": 264,
+    "lua": "lua53"
+  },
+  {
+    "fast": true,
+    "filterWrites": 20,
+    "normalNodeCloses": 160,
+    "arrays": 10,
+    "moveReplays": 40,
+    "saveReplays": 42,
+    "saves": 154,
+    "lua": "lua53"
+  },
+  {
+    "fast": false,
+    "filterWrites": 60,
+    "normalNodeCloses": 480,
+    "arrays": 30,
+    "moveReplays": 240,
+    "saveReplays": 66,
+    "saves": 784,
+    "lua": "lua53"
+  },
+  {
+    "fast": true,
+    "filterWrites": 60,
+    "normalNodeCloses": 480,
+    "arrays": 30,
+    "moveReplays": 120,
+    "saveReplays": 42,
+    "saves": 454,
+    "lua": "lua53"
+  }
+]
