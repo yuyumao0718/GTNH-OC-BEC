@@ -61,8 +61,40 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     assert(text():find('演示配方 A ×128', 1, true))
     assert(text():find('蜂群 T2', 1, true) and text():find('等T3', 1, true))
     assert(text():find('76.0%', 1, true))
-    if size[1] >= 120 then
+    if size[1] == 160 then
         assert(ui.nodePages == 1 and text():find('#16', 1, true))
+    end
+    local previous, firstNode
+    for y, row in ipairs(ui.rows) do
+        for _, span in ipairs(row) do
+            if span[2]:match('^#%d+  ') then
+                assert(not previous or y == previous + 2, 'each node must occupy two rows')
+                firstNode = firstNode or { x = span[1], y = y }
+                previous = y
+            end
+        end
+    end
+    local barWidth = size[1] >= 120 and 29 or size[1] - 19
+    local longBar = false
+    for _, span in ipairs(ui.rows[firstNode.y + 1]) do
+        longBar = longBar or span[1] == firstNode.x and span[2] == string.rep('━', barWidth)
+    end
+    assert(longBar, 'progress should use the full second row beside percentage and status')
+    local nextPage
+    for _, hit in ipairs(ui.hits) do
+        if hit.id == 'node+' then
+            nextPage = hit
+        end
+    end
+    if size[1] == 160 then
+        assert(not nextPage, 'a single node page must not cover the last progress bar')
+    else
+        assert(nextPage and ui.nodePages > 1)
+        ui:runtimeEvent('touch', nil, nextPage.x, nextPage.y)
+        ui:runtime(e, r)
+        assert(ui.nodePage == 2 and not text():find('#1  ', 1, true))
+        ui.nodePage = 1
+        ui:runtime(e, r)
     end
     writes = {}
     ui:runtime(e, r)
@@ -181,7 +213,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     compareFull()
     assert(text():find('加工完成', 1, true) and text():find('本批完成', 1, true))
     assert(not text():find('加工中', 1, true) and not text():find('已取料', 1, true))
-    if size[1] >= 120 then
+    if size[1] == 160 then
         assert(text():find('#16  本批完成', 1, true) and ui.nodePages == 1)
     end
 

@@ -442,9 +442,9 @@ function G:runtime(e, refill)
     self:bar(2, 5, w - 12, total / e.cfg.fieldLimit)
     self:put(w - 9, 5, string.format('%.1f%%', 100 * total / e.cfg.fieldLimit), 8, ink.dim)
     for i, label in ipairs({ '1 库存', '2 阵列', '3 AE下单' }) do
-        self:button('tab:' .. i, 2 + (i - 1) * 12, 7, label, self.tab == i)
+        self:button('tab:' .. i, 2 + (i - 1) * 12, 6, label, self.tab == i)
     end
-    self:put(40, 7, '~ 为约数', w - 41, ink.dim)
+    self:put(40, 6, '~ 为约数', w - 41, ink.dim)
     local fluids, known = {}, {}
     for _, b in ipairs(e.cfg.bands) do
         for _, m in ipairs(e.M) do
@@ -506,7 +506,7 @@ function G:runtime(e, refill)
     local first = page * self.perPage + 1
     self:put(
         2,
-        9,
+        8,
         self.tab == 1 and '凝聚态简称 / L'
             or self.tab == 2 and '观测阵列 / 当前批次'
             or 'AE下单 / 状态',
@@ -514,12 +514,12 @@ function G:runtime(e, refill)
         ink.dim
     )
     if self.tab == 1 then
-        self:put(left - 38, 9, '现存', 12, ink.dim)
-        self:put(left - 25, 9, '预缓存目标', 12, ink.dim)
-        self:put(left - 12, 9, '状态', 12, ink.dim)
+        self:put(left - 38, 8, '现存', 12, ink.dim)
+        self:put(left - 25, 8, '预缓存目标', 12, ink.dim)
+        self:put(left - 12, 8, '状态', 12, ink.dim)
     end
     for i = first, math.min(#list, first + self.perPage - 1) do
-        local y = 10 + i - first
+        local y = 9 + i - first
         local bg = i == selected and ink.selected or ink.bg
         local r = list[i]
         self:put(2, y, string.rep(' ', left), left, ink.text, bg)
@@ -656,33 +656,33 @@ function G:runtime(e, refill)
         end
     end
     if wide then
-        self:arrayPanel(e, left + 4, 9, 45, h - 8)
+        self:arrayPanel(e, left + 4, 8, 45, h - 8)
     elseif self.tab == 2 then
         self:button(
             'nodes',
             w - 18,
-            7,
+            6,
             self.nodeOnly and '返回阵列' or '查看节点',
             self.nodeOnly
         )
         if self.nodeOnly then
-            for y = 9, h - 6 do
+            for y = 8, h - 6 do
                 self.rows[y] = {}
             end
             -- Remove covered row hitboxes before drawing the node panel.
             local hits = {}
             for _, hit in ipairs(self.hits) do
-                if hit.y < 9 or hit.y > h - 6 then
+                if hit.y < 8 or hit.y > h - 6 then
                     hits[#hits + 1] = hit
                 end
             end
             self.hits = hits
-            self:arrayPanel(e, 2, 9, w - 3, h - 8)
+            self:arrayPanel(e, 2, 8, w - 3, h - 8)
         end
     end
-    self:frame(1, 8, left + 2, h - 7)
+    self:frame(1, 7, left + 2, h - 7)
     if wide then
-        self:frame(left + 3, 8, w - left - 2, h - 7)
+        self:frame(left + 3, 7, w - left - 2, h - 7)
     end
     self:frame(1, h - 6, w, h - 2)
     self:button('prev', 2, h, '上一页')
@@ -698,21 +698,21 @@ function G:arrayPanel(e, x, top, width, bottom)
     end
     local s = e.s.arrays[a.address]
     local b = s and s.batch
-    self:put(x, top, self:recordName(e.cfg, 'arrays', a), width, ink.cyan)
-    self:button('array-', x, top + 1, '上一台')
-    self:button('array+', x + 10, top + 1, '下一台')
+    self:put(x, top, self:recordName(e.cfg, 'arrays', a), width - 20, ink.cyan)
+    self:button('array-', x + width - 18, top, '上一台')
+    self:button('array+', x + width - 8, top, '下一台')
     local tier = (e.provided or {})[a.address]
     local product = b
         and (b.collection and '算力奇点合并加工' or e.s.patterns[b.key].pattern.label)
     self:put(
         x,
-        top + 2,
+        top + 1,
         product and product .. ' ×' .. exact(b.count) or '等待 AE 下单',
         width
     )
     self:put(
         x,
-        top + 3,
+        top + 2,
         e.errors[a.address] and '已暂停 / 暂停前进度'
             or (b and phase(e, b, s) or e.status[a.address] or '空闲')
                 .. '  |  '
@@ -720,7 +720,6 @@ function G:arrayPanel(e, x, top, width, bottom)
         width,
         e.errors[a.address] and ink.red or ink.green
     )
-    self:put(x, top + 4, '节点 / 并行 / 蜂群      进度 / 状态', width, ink.dim)
     local observed = (e.observations or {})[a.address]
     local views, workers = {}, {}
     for _, n in pairs(observed or {}) do
@@ -729,11 +728,15 @@ function G:arrayPanel(e, x, top, width, bottom)
     for _, worker in ipairs(b and b.workers or {}) do
         workers[worker.address] = worker
     end
-    local per = math.max(1, bottom - top - 5)
+    local firstRow = top + 3
+    local per = math.max(1, math.floor((bottom - firstRow + 1) / 2))
+    if #a.nodes > per then
+        per = math.max(1, math.floor((bottom - firstRow) / 2))
+    end
     self.nodePages = math.max(1, math.ceil(#a.nodes / per))
     self.nodePage = math.max(1, math.min(self.nodePage, self.nodePages))
     for i = (self.nodePage - 1) * per + 1, math.min(#a.nodes, self.nodePage * per) do
-        local y = top + 5 + i - (self.nodePage - 1) * per - 1
+        local y = firstRow + 2 * (i - (self.nodePage - 1) * per - 1)
         local address = a.nodes[i].address
         local n = views[address]
         local worker = workers[address]
@@ -742,14 +745,14 @@ function G:arrayPanel(e, x, top, width, bottom)
                 x,
                 y,
                 '#' .. i .. '  ' .. amount(n.parallel) .. ' 并行 T' .. (n.tier or '-'),
-                20
+                width
             )
             if n.fast then
                 self:put(
-                    x + 21,
-                    y,
+                    x,
+                    y + 1,
                     e.errors[a.address] and '已暂停' or '快速加工',
-                    width - 21,
+                    width,
                     ink.cyan
                 )
             else
@@ -759,9 +762,9 @@ function G:arrayPanel(e, x, top, width, bottom)
                     or '加工'
                 local color = status == '加工' and ink.cyan or ink.amber
                 local ratio = math.min(1, n.progress / n.length)
-                self:bar(x + 21, y, width - 37, ratio, color)
-                self:put(x + width - 15, y, string.format('%5.1f%%', ratio * 100), 6, color)
-                self:put(x + width - 8, y, status, 8, color)
+                self:bar(x, y + 1, width - 16, ratio, color)
+                self:put(x + width - 15, y + 1, string.format('%5.1f%%', ratio * 100), 6, color)
+                self:put(x + width - 8, y + 1, status, 8, color)
             end
         else
             local status = '空闲'
@@ -781,15 +784,17 @@ function G:arrayPanel(e, x, top, width, bottom)
             self:put(x, y, '#' .. i .. '  ' .. status, width, ink.dim)
         end
     end
-    self:button('node-', x, bottom, '上页')
-    self:button('node+', x + 8, bottom, '下页')
-    self:put(
-        x + 16,
-        bottom,
-        '节点 ' .. self.nodePage .. '/' .. self.nodePages,
-        width - 16,
-        ink.dim
-    )
+    if self.nodePages > 1 then
+        self:button('node-', x, bottom, '上页')
+        self:button('node+', x + 8, bottom, '下页')
+        self:put(
+            x + 16,
+            bottom,
+            '节点 ' .. self.nodePage .. '/' .. self.nodePages,
+            width - 16,
+            ink.dim
+        )
+    end
 end
 
 function G:runtimeEvent(name, _, ch, code, direction)

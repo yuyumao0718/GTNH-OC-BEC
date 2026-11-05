@@ -57,7 +57,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
         canvas.save(root / 'wiki' / 'runtime.png')
     for name, index in (('fast', 1), ('progress', 2), ('idle', 4)):
         lua.execute(f'ui.arrayIndex={index}; ui:runtime(fixture.engine,fixture.refill)')
-        if width >= 120:
+        if width == 160:
             lua.execute('''
               assert(ui.nodePages == 1, '16 nodes should fit on one page')
               local previous,count=nil,0
@@ -65,7 +65,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
                 for _,span in ipairs(row) do
                   assert(not span[2]:find('独立调度',1,true))
                   if span[2]:match('^#%d+  ') then
-                    assert(not previous or y == previous+1, 'nodes should use consecutive rows')
+                    assert(not previous or y == previous+2, 'nodes should use two rows each')
                     previous=y; count=count+1
                   end
                 end
