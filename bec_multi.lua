@@ -74,12 +74,7 @@ local function configure()
         U = U,
         clearRecipes = function()
             Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
-            local count, patterns = store.clearRecipes()
-            if engine then
-                engine.s.patterns = patterns
-                engine.poolSupport, engine.supported = {}, {}
-            end
-            return count
+            return store.clearRecipes()
         end,
         draft = function(value)
             store.write('multi.setup', value)
@@ -116,7 +111,12 @@ local ok, err = xpcall(function()
         }, modules)
         if command == 'check' then
             engine:check()
-            engine:scanBees()
+            if not engine:scanBees() then
+                print(
+                    '检查尚未完成：蜂群元件仍在 ME-IO 端口中，归位后可再次检查。'
+                )
+                return
+            end
             Refill.new(engine)
             print(
                 '检查通过：'
@@ -202,6 +202,7 @@ local ok, err = xpcall(function()
             break
         end
         engine:pause()
+        engine = nil
         configure()
     until false
 end, debug.traceback)

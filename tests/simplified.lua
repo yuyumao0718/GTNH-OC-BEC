@@ -505,12 +505,32 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         'mid-quit',
         'mid-interrupt',
         'mid-setup',
+        'boot-quit',
+        'boot-setup',
+        'check-pending',
+        'check-ready',
         'redraw',
         'slow-redraw',
         'save-interrupt',
         'save-error',
     }) do
-        local w = make(1, action == 'pending' and 0 or 9, { stageTicks = 40 })
+        local boot = action:match('^boot%-')
+        local check = action:match('^check%-')
+        local w = make(
+            check and 2 or 1,
+            (action == 'pending' or boot or check) and 0 or 9,
+            { stageTicks = 40 }
+        )
+        if boot then
+            local node = w.nodes['a1:n1']
+            node.active, node.count, node.progress = true, 1, 2
+        elseif action == 'check-pending' then
+            w.share({ { tier = 1, slot = 1, count = 32 }, { tier = 2, slot = 2, count = 32 } })
+            for i = 1, 2 do
+                local slots = w.inventories['a' .. i .. ':beeBox'].slots
+                w.inventories['a' .. i .. ':load'].slots[1], slots[i] = slots[i], nil
+            end
+        end
         if action == 'pending' then
             w.addFeed('raw', 1)
             w.stock[fluid] = 0
@@ -603,6 +623,11 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                     end
                     w.advance()
                     assert(w.time < 3000, 'entry did not exit')
+                    if boot and not sent then
+                        assert(not engine.recovered)
+                        sent = true
+                        return action:sub(6)
+                    end
                     if action == 'redraw' or action == 'slow-redraw' then
                         if not redrawAt and w.time >= 5 then
                             redrawAt = w.time
@@ -721,7 +746,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                             end,
                             edit = function()
                                 assert(
-                                    action == 'mid-setup'
+                                    (action == 'mid-setup' or action == 'boot-setup')
                                         and not engine.s.arrays.a1.batch
                                         and w.arrays.a1.bees == 0
                                 )
@@ -741,14 +766,29 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                 errorOutput[#errorOutput + 1] = text
             end,
         }
+        local output, oldPrint = {}, print
+        if check then
+            print = function(msg)
+                output[#output + 1] = msg
+            end
+        end
         local ok, err = pcall(function()
-            assert(loadfile(ROOT .. 'bec_multi.lua'))('run')
+            assert(loadfile(ROOT .. 'bec_multi.lua'))(check and 'check' or 'run')
         end)
+        print = oldPrint
         require, dofile = oldRequire, oldDofile
         io.stderr = oldStderr
         assert(ok, err)
-        assert(sent and engine and not next(engine.errors))
-        if action == 'save-error' then
+        if not check then
+            assert(sent and engine and not next(engine.errors))
+        end
+        if check then
+            local phrase = action == 'check-pending' and '检查尚未完成' or '检查通过'
+            assert(#output == 1 and output[1]:find(phrase, 1, true))
+        elseif boot then
+            assert(w.produced == 1 and w.arrays.a1.bees == 0)
+            assert(edits == (action == 'boot-setup' and 1 or 0))
+        elseif action == 'save-error' then
             assert(
                 saveErrors == 1 and table.concat(errorOutput):find('ORIGINAL SAVE FAILURE', 1, true)
             )

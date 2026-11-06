@@ -308,13 +308,10 @@ local function phase(e, b, s)
     if s and s.request then
         return '等待 T' .. s.request.tier .. ' 蜂群'
     end
-    if b.admitting then
-        return '节点取料'
-    end
     if b.phase == 'wait' and not b.granted then
         local demand = 0
-        for _, amount in pairs(b.reserve or {}) do
-            demand = demand + amount
+        for _, required in pairs(b.reserve or {}) do
+            demand = demand + required
         end
         if demand > e.cfg.fieldLimit then
             return '场强容量不足',
@@ -327,8 +324,8 @@ local function phase(e, b, s)
         if not e.free or e.resourceScan then
             return '核对凝聚物库存'
         end
-        for id, amount in pairs(b.reserve or {}) do
-            if amount > (e.free[id] or 0) then
+        for id, required in pairs(b.reserve or {}) do
+            if required > (e.free[id] or 0) then
                 return '等待凝聚物'
             end
         end
@@ -476,7 +473,9 @@ function G:runtime(e, refill)
     for _, c in ipairs(e.cfg.channels) do
         channels[#channels + 1] = {
             label = '接单：' .. self:recordName(e.cfg, 'channels', c),
-            status = e.status[c.id] or '等待',
+            status = e.s.admission and '本单取料中，已锁定下单接口'
+                or e.status[c.id]
+                or '等待',
             error = e.errors[c.id],
         }
     end
@@ -770,12 +769,10 @@ function G:arrayPanel(e, x, top, width, bottom)
                     status = observed and '本批完成' or '待读取'
                 else
                     local cached = (e.nodeCache or {})[address]
-                    local accepted = b.phase ~= 'admit'
-                        or worker.accepted
-                        or cached and cached.worker == worker and cached.accepted
+                    local accepted = b.phase ~= 'admit' or worker.accepted
                     status = (
                         accepted and '已取料 '
-                        or cached and cached.intake and '取料中 '
+                        or cached and cached.worker == worker and cached.intake and '取料中 '
                         or '准备取料 '
                     )
                         .. worker.count

@@ -969,7 +969,7 @@ function F:act(action, button)
             self:act(action == 'up' and 'prev' or 'next')
         else
             self.pos = math.max(1, self.pos + (action == 'up' and -1 or 1))
-            self.offset = 1
+            self.boxPage, self.offset = 1, 1
             self.selected = {}
         end
     elseif action == 'prev' or action == 'next' then
@@ -1323,7 +1323,7 @@ function F:drawFluids(x, width, b)
         if editing then
             ui:control('confirm-edit', x, editTop + 5, '确认')
             ui:control('cancel-edit', x + 10, editTop + 5, '取消')
-            ui:put(x + 20, editTop + 5, 'Enter 确认', width - 20, ink.dim)
+            ui:put(x + 20, editTop + 5, '回车确认', width - 20, ink.dim)
         end
     else
         ui:put(x, editTop + 2, '点击表格中的值修改配置', width, ink.dim)
@@ -1331,7 +1331,7 @@ function F:drawFluids(x, width, b)
     ui:put(
         x,
         b.status,
-        '位置：驱动器编号/固定槽位；关闭后保留位置',
+        '关闭预缓存后，使用该流体的配方也无法开工。',
         width,
         ink.dim
     )
@@ -1342,6 +1342,26 @@ function F:draw()
     local ink = ui.ink
     ui:begin('BEC / 多观测阵列配置')
     local w, h = ui.w, ui.h
+    if self.popup and self.popup.clearRecipes then
+        local width = math.min(68, w - 4)
+        local x, y = math.floor((w - width) / 2) + 1, math.floor((h - 10) / 2)
+        ui:frame(x, y, width, y + 10)
+        ui:put(x + 2, y + 1, self.popup.title, width - 4, ink.green)
+        for i, option in ipairs(self.popup.options) do
+            local line = y + i * 3
+            ui:control(
+                'pick:' .. i,
+                x + 2,
+                line,
+                option.label,
+                option.value == self.popup.current,
+                width - 4
+            )
+            ui:put(x + 6, line + 1, option.detail, width - 8, 0x999999)
+        end
+        ui:paint()
+        return
+    end
     local left = w >= 120 and 30 or 20
     local x = left + 3
     local width = w - x - 1
@@ -1423,7 +1443,7 @@ function F:draw()
     self.perPage = math.max(1, math.floor((h - 13) / stride))
     if self.popup then
         local p = self.popup
-        local step = p.clearRecipes and 3 or (p.options[1] and p.options[1].detail and 2 or 1)
+        local step = p.options[1] and p.options[1].detail and 2 or 1
         local per = math.floor((h - 15) / step)
         self.optionPages = math.max(1, math.ceil(#p.options / per))
         p.page = math.min(p.page, self.optionPages)
@@ -1441,14 +1461,7 @@ function F:draw()
                 width
             )
             if step >= 2 then
-                local indent = p.clearRecipes and 4 or 0
-                ui:put(
-                    x + indent,
-                    y + 1,
-                    v.detail or '',
-                    width - indent,
-                    p.clearRecipes and 0x999999 or ink.dim
-                )
+                ui:put(x, y + 1, v.detail or '', width, ink.dim)
             end
         end
         if #p.options == 0 then
@@ -1460,9 +1473,7 @@ function F:draw()
         if p.all then
             ui:control('all', x + 14, b.status, '全选未分配')
         end
-        if not p.clearRecipes then
-            ui:control('back', x + 34, b.status, '返回')
-        end
+        ui:control('back', x + 34, b.status, '返回')
     elseif o and o.kind == 'box' then
         self:drawBox(o, x, width)
     elseif o and o.kind == 'fluids' then
@@ -1515,24 +1526,13 @@ function F:draw()
             )
         end
     end
-    if self.popup and self.popup.clearRecipes then
-        ui:wrap(
-            2,
-            h - 2,
-            '确认后立即清除并保存；请选择取消或确认清除',
-            w - 3,
-            2,
-            ink.amber
-        )
-    else
-        ui:control('prev', x, b.nav, '上一页')
-        ui:control('next', x + 12, b.nav, '下一页')
-        ui:control('refresh', x + 24, b.nav, 'F 刷新')
-        ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
-        ui:control('save', 2, h, 'S 保存并返回')
-        ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
-        ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
-    end
+    ui:control('prev', x, b.nav, '上一页')
+    ui:control('next', x + 12, b.nav, '下一页')
+    ui:control('refresh', x + 24, b.nav, 'F 刷新')
+    ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
+    ui:control('save', 2, h, 'S 保存并返回')
+    ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
+    ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end
 

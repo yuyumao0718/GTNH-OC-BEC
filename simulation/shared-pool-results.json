@@ -1,0 +1,1298 @@
+[
+  {
+    "arrays": 6,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 21417.699999828317,
+    "bee_wait_seconds": 955.5999999996786,
+    "sync_calls": 28991,
+    "moves": 2788,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      205.25000000001242,
+      1.3000000000000005,
+      749.0499999998665
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 4652.8,
+        "finish": 15760.9
+      },
+      "StargateFramePart": {
+        "arrays": 4,
+        "start": 15760.95,
+        "finish": 19076.15
+      },
+      "astralArrayFabricator": {
+        "arrays": 1,
+        "start": 16125.4,
+        "finish": 16151.95
+      }
+    }
+  },
+  {
+    "arrays": 6,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 20456.649999842302,
+    "bee_wait_seconds": 2202.0999999992455,
+    "sync_calls": 26528,
+    "moves": 2334,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      320.1000000000385,
+      0.49999999999999994,
+      1881.4999999988365
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 6,
+        "start": 0.0,
+        "finish": 2418.1
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 2921.85,
+        "finish": 14127.85
+      },
+      "astralArrayFabricator": {
+        "arrays": 4,
+        "start": 16976.25,
+        "finish": 17000.5
+      }
+    }
+  },
+  {
+    "arrays": 6,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 20792.999999837408,
+    "bee_wait_seconds": 1673.6999999990255,
+    "sync_calls": 32779,
+    "moves": 5100,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      162.25000000000264,
+      1.5500000000000007,
+      1509.8999999991745
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 4,
+        "start": 6291.25,
+        "finish": 9589.3
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 9589.35,
+        "finish": 20793.0
+      },
+      "astralArrayFabricator": {
+        "arrays": 4,
+        "start": 15425.9,
+        "finish": 15448.55
+      }
+    }
+  },
+  {
+    "arrays": 6,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 21366.549999829058,
+    "bee_wait_seconds": 83.29999999999741,
+    "sync_calls": 28933,
+    "moves": 2756,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      82.64999999999745,
+      0.65,
+      0
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 4652.45,
+        "finish": 15760.45
+      },
+      "StargateFramePart": {
+        "arrays": 4,
+        "start": 15760.5,
+        "finish": 18717.95
+      },
+      "astralArrayFabricator": {
+        "arrays": 1,
+        "start": 16126.0,
+        "finish": 16152.55
+      }
+    }
+  },
+  {
+    "arrays": 6,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 20149.599999846767,
+    "bee_wait_seconds": 202.9500000000119,
+    "sync_calls": 26352,
+    "moves": 2392,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      202.70000000001184,
+      0,
+      0.25
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 6,
+        "start": 0.0,
+        "finish": 1981.8
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 2599.0,
+        "finish": 13819.7
+      },
+      "astralArrayFabricator": {
+        "arrays": 4,
+        "start": 15745.2,
+        "finish": 15768.2
+      }
+    }
+  },
+  {
+    "arrays": 6,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 18044.4499998774,
+    "bee_wait_seconds": 22.350000000000183,
+    "sync_calls": 30139,
+    "moves": 5224,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0.7000000000000001,
+      21.650000000000173
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 4,
+        "start": 6291.25,
+        "finish": 9100.5
+      },
+      "StargateFramePart": {
+        "arrays": 3,
+        "start": 9100.55,
+        "finish": 12886.4
+      },
+      "astralArrayFabricator": {
+        "arrays": 4,
+        "start": 15426.1,
+        "finish": 15448.55
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 15203.899999918624,
+    "bee_wait_seconds": 8117.2000000207645,
+    "sync_calls": 26815,
+    "moves": 4498,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2505.150000000348,
+      32.20000000000031,
+      397.35000000005607,
+      389.5500000000543,
+      0.35,
+      210.35000000001358,
+      236.95000000001963,
+      348.650000000045,
+      53.899999999999075,
+      3942.750000005578
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2074.3,
+        "finish": 13183.05
+      },
+      "StargateFramePart": {
+        "arrays": 8,
+        "start": 13183.1,
+        "finish": 15203.9
+      },
+      "astralArrayFabricator": {
+        "arrays": 3,
+        "start": 10894.05,
+        "finish": 10930.0
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 18934.049999864346,
+    "bee_wait_seconds": 5395.9000000108645,
+    "sync_calls": 28459,
+    "moves": 3494,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      372.15000000005034,
+      275.7000000000284,
+      2.499999999999999,
+      377.2500000000515,
+      0,
+      118.49999999999541,
+      0,
+      252.15000000002308,
+      2.7499999999999982,
+      3994.9000000057677
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 10,
+        "start": 0.0,
+        "finish": 1751.65
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 1832.0,
+        "finish": 13146.4
+      },
+      "astralArrayFabricator": {
+        "arrays": 4,
+        "start": 15990.7,
+        "finish": 16029.35
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 15478.29999991463,
+    "bee_wait_seconds": 9296.05000000497,
+    "sync_calls": 32522,
+    "moves": 7026,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2744.85000000122,
+      122.69999999999517,
+      317.70000000003796,
+      551.9500000000457,
+      685.0999999999246,
+      283.6500000000302,
+      164.55000000000317,
+      99.54999999999649,
+      88.29999999999713,
+      4237.700000006651
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 4,
+        "start": 2514.9,
+        "finish": 5812.9
+      },
+      "StargateFramePart": {
+        "arrays": 7,
+        "start": 5812.95,
+        "finish": 7995.7
+      },
+      "astralArrayFabricator": {
+        "arrays": 10,
+        "start": 12755.35,
+        "finish": 12798.45
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 14661.099999926519,
+    "bee_wait_seconds": 4292.150000006849,
+    "sync_calls": 26155,
+    "moves": 4496,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2496.350000000316,
+      32.20000000000031,
+      456.55000000006953,
+      548.1500000000492,
+      0.35,
+      210.35000000001358,
+      294.0500000000326,
+      137.94999999999712,
+      20.450000000000156,
+      95.7499999999967
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2074.45,
+        "finish": 13182.45
+      },
+      "StargateFramePart": {
+        "arrays": 9,
+        "start": 13182.5,
+        "finish": 14661.1
+      },
+      "astralArrayFabricator": {
+        "arrays": 3,
+        "start": 10894.35,
+        "finish": 10929.75
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 18655.149999868398,
+    "bee_wait_seconds": 1324.1499999993434,
+    "sync_calls": 28174,
+    "moves": 3524,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 2,
+    "wait_by_tier": [
+      290.40000000003175,
+      337.5500000000425,
+      2.000000000000001,
+      292.2500000000322,
+      2.9499999999999975,
+      182.3000000000072,
+      0,
+      112.99999999999572,
+      1.900000000000001,
+      101.79999999999636
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 10,
+        "start": 0.0,
+        "finish": 1267.85
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 1566.4,
+        "finish": 12854.95
+      },
+      "astralArrayFabricator": {
+        "arrays": 3,
+        "start": 15646.2,
+        "finish": 15702.0
+      }
+    }
+  },
+  {
+    "arrays": 10,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 15479.549999914609,
+    "bee_wait_seconds": 5074.150000009694,
+    "sync_calls": 32501,
+    "moves": 7026,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2741.1000000012064,
+      125.649999999995,
+      319.6500000000384,
+      552.750000000045,
+      687.0999999999228,
+      346.9000000000446,
+      164.6500000000032,
+      0.35,
+      5.04999999999999,
+      130.94999999999553
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 4,
+        "start": 2514.8,
+        "finish": 5496.85
+      },
+      "StargateFramePart": {
+        "arrays": 7,
+        "start": 5496.9,
+        "finish": 7269.8
+      },
+      "astralArrayFabricator": {
+        "arrays": 10,
+        "start": 12755.35,
+        "finish": 12796.95
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 14362.449999930812,
+    "bee_wait_seconds": 7658.550000019096,
+    "sync_calls": 27676,
+    "moves": 5210,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2601.2500000006976,
+      186.60000000000818,
+      521.2000000000737,
+      801.0499999998192,
+      310.0500000000362,
+      260.650000000025,
+      179.75000000000662,
+      162.60000000000272,
+      4.599999999999992,
+      2630.800000000805
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 1272.65,
+        "finish": 12381.4
+      },
+      "StargateFramePart": {
+        "arrays": 8,
+        "start": 12381.45,
+        "finish": 14362.45
+      },
+      "astralArrayFabricator": {
+        "arrays": 5,
+        "start": 10520.3,
+        "finish": 10564.8
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 14459.599999929398,
+    "bee_wait_seconds": 7866.700000019853,
+    "sync_calls": 25488,
+    "moves": 4076,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 2,
+    "wait_by_tier": [
+      896.1999999997327,
+      449.25000000006787,
+      22.05000000000018,
+      979.6999999996567,
+      394.0500000000553,
+      412.60000000005954,
+      28.50000000000027,
+      374.80000000005094,
+      16.900000000000105,
+      4292.650000006851
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 12,
+        "start": 0.0,
+        "finish": 1573.85
+      },
+      "StargateFramePart": {
+        "arrays": 2,
+        "start": 1584.45,
+        "finish": 7543.5
+      },
+      "astralArrayFabricator": {
+        "arrays": 6,
+        "start": 11227.0,
+        "finish": 11276.8
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 17641.1999998831,
+    "bee_wait_seconds": 12006.249999965532,
+    "sync_calls": 35534,
+    "moves": 7216,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      5071.200000009683,
+      122.1999999999952,
+      581.2500000000191,
+      852.7999999997721,
+      1155.0999999994972,
+      354.15000000004625,
+      294.4500000000327,
+      180.90000000000688,
+      5.549999999999988,
+      3388.650000003562
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2496.6,
+        "finish": 13605.35
+      },
+      "StargateFramePart": {
+        "arrays": 11,
+        "start": 13605.4,
+        "finish": 15226.15
+      },
+      "astralArrayFabricator": {
+        "arrays": 10,
+        "start": 10364.25,
+        "finish": 10409.0
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 14082.349999934882,
+    "bee_wait_seconds": 8730.5500000132,
+    "sync_calls": 27596,
+    "moves": 5348,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      5395.700000010864,
+      228.5000000000177,
+      505.7500000000807,
+      1277.1499999993862,
+      492.30000000007766,
+      275.7000000000284,
+      289.60000000003157,
+      153.7500000000007,
+      20.65000000000016,
+      91.44999999999695
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 1494.35,
+        "finish": 12602.15
+      },
+      "StargateFramePart": {
+        "arrays": 9,
+        "start": 12602.2,
+        "finish": 14082.35
+      },
+      "astralArrayFabricator": {
+        "arrays": 5,
+        "start": 10525.05,
+        "finish": 10569.8
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 18326.649999873123,
+    "bee_wait_seconds": 3608.800000004363,
+    "sync_calls": 29621,
+    "moves": 4218,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      628.5499999999761,
+      357.550000000047,
+      22.85000000000019,
+      1202.649999999454,
+      337.50000000004246,
+      314.0000000000371,
+      69.4499999999982,
+      283.9000000000303,
+      2.4499999999999993,
+      389.9000000000544
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 12,
+        "start": 0.0,
+        "finish": 1127.25
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 1353.25,
+        "finish": 12563.5
+      },
+      "astralArrayFabricator": {
+        "arrays": 6,
+        "start": 10904.2,
+        "finish": 10951.45
+      }
+    }
+  },
+  {
+    "arrays": 12,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 17640.9999998831,
+    "bee_wait_seconds": 8788.450000012357,
+    "sync_calls": 35505,
+    "moves": 7208,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      5067.50000000967,
+      126.09999999999498,
+      583.8000000000168,
+      883.2999999997444,
+      1155.8999999994965,
+      419.20000000006104,
+      359.6000000000475,
+      60.4499999999987,
+      4.699999999999991,
+      127.89999999999488
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2496.85,
+        "finish": 13605.9
+      },
+      "StargateFramePart": {
+        "arrays": 11,
+        "start": 13605.95,
+        "finish": 14838.0
+      },
+      "astralArrayFabricator": {
+        "arrays": 10,
+        "start": 10364.55,
+        "finish": 10408.7
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 17480.499999885327,
+    "bee_wait_seconds": 17490.649999885725,
+    "sync_calls": 35559,
+    "moves": 7472,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      5055.6000000096265,
+      367.70000000004933,
+      617.9999999999857,
+      1014.599999999625,
+      1102.0999999995454,
+      489.350000000077,
+      1311.0499999993554,
+      332.4500000000413,
+      308.35000000003583,
+      6891.450000016305
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 1179.9,
+        "finish": 12286.35
+      },
+      "StargateFramePart": {
+        "arrays": 14,
+        "start": 12286.4,
+        "finish": 13788.25
+      },
+      "astralArrayFabricator": {
+        "arrays": 12,
+        "start": 15986.05,
+        "finish": 16053.4
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 18662.449999868128,
+    "bee_wait_seconds": 13936.74999993744,
+    "sync_calls": 34614,
+    "moves": 6350,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      2613.0500000007405,
+      852.4999999997724,
+      36.55000000000006,
+      1268.449999999394,
+      1812.4499999988993,
+      384.10000000005306,
+      62.349999999998595,
+      340.8000000000432,
+      18.400000000000126,
+      6548.100000015056
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 16,
+        "start": 0.0,
+        "finish": 1368.6
+      },
+      "StargateFramePart": {
+        "arrays": 6,
+        "start": 1368.65,
+        "finish": 3909.05
+      },
+      "astralArrayFabricator": {
+        "arrays": 14,
+        "start": 10764.7,
+        "finish": 10827.85
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 49,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3,
+      3,
+      1
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 18294.64999987348,
+    "bee_wait_seconds": 22999.899999805555,
+    "sync_calls": 40316,
+    "moves": 8894,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      11035.799999979654,
+      245.30000000002153,
+      601.6500000000005,
+      1518.4999999991667,
+      1345.399999999324,
+      727.3499999998862,
+      1139.4499999995114,
+      171.00000000000463,
+      59.84999999999874,
+      6155.600000013628
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2255.45,
+        "finish": 13626.25
+      },
+      "StargateFramePart": {
+        "arrays": 14,
+        "start": 13626.3,
+        "finish": 15130.3
+      },
+      "astralArrayFabricator": {
+        "arrays": 16,
+        "start": 15983.0,
+        "finish": 16046.85
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 0,
+    "seconds": 17952.04999987846,
+    "bee_wait_seconds": 9593.950000000636,
+    "sync_calls": 36127,
+    "moves": 7536,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      4377.800000007161,
+      275.95000000002847,
+      740.6999999998741,
+      1450.1499999992288,
+      689.7499999999204,
+      537.7500000000587,
+      1020.1999999996199,
+      110.44999999999587,
+      62.149999999998606,
+      329.05000000004054
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 996.1,
+        "finish": 12103.05
+      },
+      "StargateFramePart": {
+        "arrays": 14,
+        "start": 12103.1,
+        "finish": 13149.55
+      },
+      "astralArrayFabricator": {
+        "arrays": 12,
+        "start": 16509.45,
+        "finish": 16575.2
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "reverse",
+    "supply_gap": 0,
+    "seconds": 18094.099999876395,
+    "bee_wait_seconds": 8541.150000015956,
+    "sync_calls": 33874,
+    "moves": 6130,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      692.0999999999183,
+      851.6499999997732,
+      47.09999999999946,
+      4247.050000006685,
+      1632.449999999063,
+      641.3999999999644,
+      93.04999999999686,
+      167.3000000000038,
+      11.100000000000023,
+      157.95000000000167
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 16,
+        "start": 0.0,
+        "finish": 922.25
+      },
+      "StargateFramePart": {
+        "arrays": 1,
+        "start": 1079.7,
+        "finish": 12294.5
+      },
+      "astralArrayFabricator": {
+        "arrays": 14,
+        "start": 10581.5,
+        "finish": 10643.3
+      }
+    }
+  },
+  {
+    "arrays": 16,
+    "cells": 54,
+    "pool": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      4,
+      4,
+      4
+    ],
+    "order": "name",
+    "supply_gap": 60,
+    "seconds": 18208.999999874723,
+    "bee_wait_seconds": 17300.799999888488,
+    "sync_calls": 40005,
+    "moves": 8890,
+    "crafts": 26521811,
+    "recipes": 69,
+    "singularity_batches": 1,
+    "wait_by_tier": [
+      11063.749999979247,
+      325.4000000000397,
+      734.6499999998796,
+      1660.9499999990371,
+      1349.5999999993203,
+      607.699999999995,
+      1169.9499999994837,
+      57.84999999999885,
+      15.400000000000084,
+      315.55000000003747
+    ],
+    "key_jobs": {
+      "StargateMaterialMesh": {
+        "arrays": 1,
+        "start": 2255.5,
+        "finish": 13626.55
+      },
+      "StargateFramePart": {
+        "arrays": 14,
+        "start": 13626.6,
+        "finish": 14774.45
+      },
+      "astralArrayFabricator": {
+        "arrays": 16,
+        "start": 15899.0,
+        "finish": 15961.7
+      }
+    }
+  }
+]

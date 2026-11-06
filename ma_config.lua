@@ -251,7 +251,10 @@ function C.validate(cfg, component, U)
         end
     end
     -- Disabled newly discovered arrays may remain unconfigured.
-    local checked = U.copy(cfg)
+    local checked = {}
+    for key, value in pairs(cfg) do
+        checked[key] = value
+    end
     checked.arrays = {}
     for _, a in ipairs(cfg.arrays) do
         if a.enabled then
@@ -399,6 +402,7 @@ function C.validate(cfg, component, U)
         end
     end
     if component then
+        local devices = {}
         local function visit(fields, value)
             for _, f in ipairs(fields) do
                 if f.kind == 'list' then
@@ -407,15 +411,24 @@ function C.validate(cfg, component, U)
                     end
                 elseif f.source and f.source:sub(1, 7) == 'device:' then
                     local a = value[f.key]
-                    assert(component.type(a), '组件离线：' .. f.label .. ' ' .. a)
-                    local d = { kind = component.type(a), methods = component.methods(a) }
-                    if d.methods.getName then
-                        d.name = component.invoke(a, 'getName')
+                    local kind = f.source:sub(8)
+                    local d = devices[a]
+                    if not d then
+                        d = {
+                            kind = assert(
+                                component.type(a),
+                                '组件离线：' .. f.label .. ' ' .. a
+                            ),
+                        }
+                        devices[a] = d
                     end
-                    assert(
-                        C.matches(d, f.source:sub(8)),
-                        '所选组件类型不正确：' .. f.label
-                    )
+                    if kind == 'assembler' or kind == 'generator' then
+                        d.methods = d.methods or component.methods(a)
+                        d.name = d.name or d.methods.getName and component.invoke(a, 'getName')
+                    elseif kind == 'pattern' or kind == 'buffer' then
+                        d.methods = d.methods or component.methods(a)
+                    end
+                    assert(C.matches(d, kind), '所选组件类型不正确：' .. f.label)
                 end
             end
         end

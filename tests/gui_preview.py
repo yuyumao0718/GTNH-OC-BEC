@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import unicodedata
+from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 root = Path(__file__).resolve().parents[1]
@@ -21,10 +22,20 @@ mono = ImageFont.truetype('C:/Windows/Fonts/consola.ttf', 18)
 out = root / 'tests' / 'previews'
 out.mkdir(exist_ok=True)
 
+@lru_cache(maxsize=8192)
+def glyph(ch, span, fg, bg):
+    tile = Image.new('RGB', (span * 10, 22), bg)
+    pen = ImageDraw.Draw(tile)
+    if ch == '━':
+        pen.line((0, 11, span * 10 - 1, 11), fill=fg, width=2)
+    else:
+        pen.text((0, 0), ch, font=font if span == 2 else mono, fill=fg)
+    return tile
+
+
 for width, height in ((120, 38), (80, 25), (160, 50)):
     state = {'fg': 0xffffff, 'bg': 0}
     canvas = Image.new('RGB', (width * 10, height * 22), '#101820')
-    draw = ImageDraw.Draw(canvas)
     def color(n):
         return f'#{int(n):06x}'
     def put(x, y, text):
@@ -33,11 +44,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
         px, py = (x - 1) * 10, (y - 1) * 22
         for ch in text:
             n = cells(ch)
-            draw.rectangle((px, py, px + n * 10 - 1, py + 21), fill=color(state['bg']))
-            if ch == '━':
-                draw.line((px, py + 11, px + n * 10, py + 11), fill=color(state['fg']), width=2)
-            else:
-                draw.text((px, py), ch, font=font if n == 2 else mono, fill=color(state['fg']))
+            canvas.paste(glyph(ch, n, color(state['fg']), color(state['bg'])), (px, py))
             px += n * 10
     lua.globals().gpu_set = put
     lua.globals().gpu_fg = lambda n: state.update(fg=n)
@@ -113,9 +120,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
       fixture.engine.status[third]='等待 T10 蜂群'
       ui.tab=2; ui.selected[2]=3; ui:runtime(fixture.engine,fixture.refill)
     ''')
-    lua.execute('fixture.engine.s.recovering=true; ui:runtime(fixture.engine,fixture.refill)')
-    canvas.save(out / f'recovery-{width}.png')
-    lua.execute('fixture.engine.s.recovering=nil; ui:runtime(fixture.engine,fixture.refill)')
+    lua.execute('ui:runtime(fixture.engine,fixture.refill)')
     canvas.save(out / f'shared-wait-{width}.png')
     if width == 120:
         canvas.save(root / 'wiki' / 'shared-wait.png')
@@ -128,11 +133,21 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
         local b=admission.state.arrays.a1.batch
         if b and b.phase=='admit' and admission.e.nodeCache['a1:n1'].intake then break end
       end
-      assert(admission.state.arrays.a1.batch.admitting)
+      assert(admission.state.arrays.a1.batch.phase=='admit')
       ui.tab=2; ui.selected[2]=1; ui.arrayIndex=1
       ui:runtime(admission.e,admission.r)
     ''')
     canvas.save(out / f'runtime-admission-{width}.png')
+    lua.execute('''
+      ui.tab=3; ui.selected[3]=1; ui:runtime(admission.e,admission.r)
+      local spans={}
+      for _,row in ipairs(ui.rows) do for _,span in ipairs(row) do spans[#spans+1]=span[2] end end
+      assert(table.concat(spans):find('本单取料中，已锁定下单接口',1,true))
+    ''')
+    canvas.save(out / f'ae-intake-{width}.png')
+    if width == 160:
+        canvas.save(root / 'wiki' / 'ae-intake.png')
+    lua.execute('ui.tab=2')
     lua.execute('''
       local make=assert(loadfile(ROOT..'tests/simplified.lua'))('fixture')
       capacity=make(1,100000000,{nodes=16})
@@ -140,7 +155,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
       for i=1,2000 do
         capacity.tick()
         local b=capacity.state.arrays.a1.batch
-        if b and b.phase=='wait' and not b.admitting then break end
+        if b and b.phase=='wait' then break end
       end
       assert(capacity.state.arrays.a1.batch.phase=='wait')
       ui:runtime(capacity.e,capacity.r)

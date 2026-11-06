@@ -99,7 +99,8 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     editor:act('tab:4')
     click('clear-recipes')
     assert(editor.popup.clearRecipes and writes == 0)
-    click('clear-recipes')
+    editor:draw()
+    assert(#ui.hits == 2 and ui.hits[1].id == 'pick:1' and ui.hits[2].id == 'pick:2')
     editor:event('key_down', 'keyboard', 115, 31)
     editor:event('key_down', 'keyboard', 13, 28)
     assert(editor.popup.clearRecipes and saves == 0 and writes == 0)
@@ -153,7 +154,7 @@ do
         edit = function(_, _, _, callbacks)
             assert(callbacks.clearRecipes() == 1)
             edited = true
-            assert(not next(e.s.patterns) and not next(e.poolSupport))
+            assert(not next(files['multi.state'].patterns))
             return false
         end,
     }
@@ -272,5 +273,5 @@ do
     assert(edited and configurationChecks == 2 and not next(files['multi.state'].patterns))
 end
 print(
-    '  PASS clearing from S updates the paused engine so final exit cannot restore stale recipe records'
+    '  PASS clearing from S discards the paused engine so a restart failure cannot restore stale recipes'
 )

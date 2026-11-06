@@ -1249,6 +1249,12 @@ test('deleting a bee box removes only its cells and bindings without renumbering
     e:act('tab:2')
     objectKind(e, 'box', pool)
     assert(e:object().box == 1)
+    e:act('next')
+    assert(e.boxPage == 2)
+    e:act('down')
+    assert(e:object().box == 2 and e.boxPage == 1)
+    e:act('up')
+    assert(e:object().box == 1 and e.boxPage == 1)
     e:draw()
     local hit
     for _, h in ipairs(e.ui.hits) do
@@ -1273,6 +1279,8 @@ test('deleting a bee box removes only its cells and bindings without renumbering
             hasWork = function()
                 return false
             end,
+            getProvidedTier = function() end,
+            getStackInSlot = function() end,
         }
     end))
     formField(e, '新增箱子').run()
@@ -1301,6 +1309,26 @@ test('unregistering the last bee cell keeps the empty box available', function()
     eq(e:boxes(pool), { 3 })
     e:act('delete')
     eq(e:boxes(pool), {})
+end)
+
+test('configuration validates each device once and skips unconfigured disabled arrays', function()
+    local ex = dofile(ROOT .. 'examples/two-arrays.lua')
+    ex.cfg.arrays[#ex.cfg.arrays + 1] = { enabled = false, address = 'offline' }
+    local components = {}
+    for _, name in ipairs({ 'type', 'methods', 'invoke' }) do
+        local read = {}
+        components[name] = function(address, ...)
+            assert(not read[address] and address ~= 'offline')
+            read[address] = true
+            if name == 'methods' then
+                local kind = ex.component.type(address)
+                assert(kind ~= 'bec_io_node' and kind ~= 'transposer')
+            end
+            return ex.component[name](address, ...)
+        end
+    end
+    assert(C.validate(ex.cfg, components, U))
+    assert(#ex.cfg.arrays == 3 and not ex.cfg.arrays[3].nodes)
 end)
 
 print(passed .. ' test groups passed')

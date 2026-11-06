@@ -26,7 +26,7 @@ function E.new(cfg, state, io, modules)
         errors = {},
         observations = {},
         provided = {},
-        beeChecked = {},
+        prepareIndex = 1,
         held = {},
         nodeCache = {},
         maxParallel = {},
@@ -477,7 +477,6 @@ function E:scanBees()
         local provided = n.getProvidedTier()
         local tier = provided and provided.tier
         local count = tier and n.getAvailableNanites() or 0
-        self.beeChecked[a.address] = { tier = tier, count = count }
         self.provided[a.address] = tier
         if tier then
             s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
@@ -547,9 +546,9 @@ function E:resolvePorts()
             end
         end
         local selected
-        for i, c in ipairs(missing) do
+        for slotIndex, c in ipairs(missing) do
             if c.tier == tier then
-                selected = table.remove(missing, i)
+                selected = table.remove(missing, slotIndex)
                 break
             end
         end
@@ -559,7 +558,6 @@ function E:resolvePorts()
         )
         task.s.bee = { tier = tier, cell = selected, loading = task.loading, phase = 'back' }
         task.s.lease = { [tier] = true }
-        self.beeChecked[task.a.address] = nil
     end
     for _, missing in pairs(ports.holes) do
         assert(
@@ -677,7 +675,6 @@ function E:collectOrder(order, idle)
     end
     b.count = b.count + assigned
     b.phase = 'admit'
-    b.admitting = true
     s.batch = b
     self.s.admission = { members = { selected.address } }
     order.count = order.count - assigned
@@ -731,7 +728,7 @@ function E:schedule()
     local index = 0
     local members = {}
     for _, a in ipairs(chosen) do
-        local b = { key = order.key, count = 0, workers = {}, phase = 'admit', admitting = true }
+        local b = { key = order.key, count = 0, workers = {}, phase = 'admit' }
         for _, n in ipairs(a.nodes) do
             if index < active then
                 index = index + 1
@@ -766,7 +763,7 @@ function E:admissionTick()
         if b.phase == 'admit' then
             for _, w in ipairs(b.workers) do
                 local cached = self:worker(w)
-                if not w.accepted and not cached.accepted and not cached.intake then
+                if not w.accepted and not cached.intake then
                     return
                 end
             end
@@ -783,7 +780,7 @@ function E:admissionTick()
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
-            if not w.accepted and not self:worker(w).accepted then
+            if not w.accepted then
                 self.io.proxy(w.address).setWorkAllowed(false)
             end
         end
@@ -793,14 +790,10 @@ function E:admissionTick()
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
             self:recipe(b, w)
-            if b.collection then
-                w.accepted = true
-            end
-            self:worker(w).accepted = true
+            w.accepted = true
         end
         b.reserve = self.U.scale(self.s.patterns[b.key].unit, b.count)
         b.phase = 'wait'
-        b.admitting = nil
         if b.collection then
             b.collection.elapsed = 0
             self.collectAt[id] = self.now
@@ -813,6 +806,8 @@ function E:admissionTick()
         end
     end
     self.s.admission = nil
+    self.status[self.cfg.channels[1].id] = queued and '算力奇点还有原料待领取'
+        or '本单已取完'
     self.resourcesAt = nil
     self.save()
     return ready
@@ -878,9 +873,8 @@ function E:support(a, meta)
 end
 
 function E:bees(a, s, want)
-    local checked = self.beeChecked[a.address]
     if not s.bee then
-        local current = checked and checked.tier
+        local current = self.provided[a.address]
         if current == want then
             s.request = nil
             return true
@@ -961,9 +955,7 @@ function E:bees(a, s, want)
             or self.log:stack(box, c.slot).storedItemCount
         s.rawCount = nil
         s.lease, s.counts, s.reuse = nil, {}, nil
-        count = 0
     end
-    self.beeChecked[a.address] = { tier = current, count = count }
     self.provided[a.address] = current
     s.bee = nil
     if not b.loading and want then
@@ -1108,7 +1100,7 @@ function E:array(a)
         local pending = {}
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
-            if not w.accepted and not cached.accepted and not cached.intake then
+            if not w.accepted and not cached.intake then
                 pending[#pending + 1] = w
             end
         end
@@ -1140,9 +1132,6 @@ function E:array(a)
             math.ceil(math.max(0, self.cfg.singularityWait - b.collection.elapsed))
         )
     elseif b.phase == 'wait' then
-        if b.admitting then
-            return
-        end
         self:support(a, meta)
         if not self:grant(b) then
             if self:pulse() then
@@ -1257,21 +1246,16 @@ function E:drain()
     if failed then
         error('无法完成已接订单：' .. failed .. ' / ' .. reason)
     end
-    if #self.s.queue > 0 then
+    if not self.recovered or #self.s.queue > 0 or self.s.admission then
         return false
-    end
-    if self.s.admission then
-        return false
-    end
-    for _, c in ipairs(self.cfg.channels) do
-        if next(self:items(c.buffer)) then
-            return false
-        end
     end
     for _, a in ipairs(self.arrays) do
         if self.s.arrays[a.address].batch then
             return false
         end
+    end
+    if next(self:items(self.cfg.channels[1].buffer)) then
+        return false
     end
     for _, a in ipairs(self.arrays) do
         if not self:hold(a) or not self:bees(a, self.s.arrays[a.address], nil) then
@@ -1306,9 +1290,12 @@ end
 
 function E:prepareArrays()
     local deadline = self.io.time() + 0.15
-    for _, a in ipairs(self.arrays) do
+    for _ = 1, #self.arrays do
+        local index = self.prepareIndex
+        local a = self.arrays[index]
+        self.prepareIndex = index % #self.arrays + 1
         local b = self.s.arrays[a.address].batch
-        if b and b.phase == 'wait' and not b.admitting then
+        if b and b.phase == 'wait' then
             if self:arrayTick(a) then
                 return true
             end

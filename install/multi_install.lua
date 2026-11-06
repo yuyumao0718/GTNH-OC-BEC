@@ -83,12 +83,7 @@ local function configure()
         U = U,
         clearRecipes = function()
             Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
-            local count, patterns = store.clearRecipes()
-            if engine then
-                engine.s.patterns = patterns
-                engine.poolSupport, engine.supported = {}, {}
-            end
-            return count
+            return store.clearRecipes()
         end,
         draft = function(value)
             store.write('multi.setup', value)
@@ -125,7 +120,12 @@ local ok, err = xpcall(function()
         }, modules)
         if command == 'check' then
             engine:check()
-            engine:scanBees()
+            if not engine:scanBees() then
+                print(
+                    '检查尚未完成：蜂群元件仍在 ME-IO 端口中，归位后可再次检查。'
+                )
+                return
+            end
             Refill.new(engine)
             print(
                 '检查通过：'
@@ -211,6 +211,7 @@ local ok, err = xpcall(function()
             break
         end
         engine:pause()
+        engine = nil
         configure()
     until false
 end, debug.traceback)
@@ -485,7 +486,10 @@ function C.validate(cfg, component, U)
         end
     end
     -- Disabled newly discovered arrays may remain unconfigured.
-    local checked = U.copy(cfg)
+    local checked = {}
+    for key, value in pairs(cfg) do
+        checked[key] = value
+    end
     checked.arrays = {}
     for _, a in ipairs(cfg.arrays) do
         if a.enabled then
@@ -633,6 +637,7 @@ function C.validate(cfg, component, U)
         end
     end
     if component then
+        local devices = {}
         local function visit(fields, value)
             for _, f in ipairs(fields) do
                 if f.kind == 'list' then
@@ -641,15 +646,24 @@ function C.validate(cfg, component, U)
                     end
                 elseif f.source and f.source:sub(1, 7) == 'device:' then
                     local a = value[f.key]
-                    assert(component.type(a), '组件离线：' .. f.label .. ' ' .. a)
-                    local d = { kind = component.type(a), methods = component.methods(a) }
-                    if d.methods.getName then
-                        d.name = component.invoke(a, 'getName')
+                    local kind = f.source:sub(8)
+                    local d = devices[a]
+                    if not d then
+                        d = {
+                            kind = assert(
+                                component.type(a),
+                                '组件离线：' .. f.label .. ' ' .. a
+                            ),
+                        }
+                        devices[a] = d
                     end
-                    assert(
-                        C.matches(d, f.source:sub(8)),
-                        '所选组件类型不正确：' .. f.label
-                    )
+                    if kind == 'assembler' or kind == 'generator' then
+                        d.methods = d.methods or component.methods(a)
+                        d.name = d.name or d.methods.getName and component.invoke(a, 'getName')
+                    elseif kind == 'pattern' or kind == 'buffer' then
+                        d.methods = d.methods or component.methods(a)
+                    end
+                    assert(C.matches(d, kind), '所选组件类型不正确：' .. f.label)
                 end
             end
         end
@@ -691,7 +705,7 @@ function E.new(cfg, state, io, modules)
         errors = {},
         observations = {},
         provided = {},
-        beeChecked = {},
+        prepareIndex = 1,
         held = {},
         nodeCache = {},
         maxParallel = {},
@@ -1142,7 +1156,6 @@ function E:scanBees()
         local provided = n.getProvidedTier()
         local tier = provided and provided.tier
         local count = tier and n.getAvailableNanites() or 0
-        self.beeChecked[a.address] = { tier = tier, count = count }
         self.provided[a.address] = tier
         if tier then
             s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
@@ -1212,9 +1225,9 @@ function E:resolvePorts()
             end
         end
         local selected
-        for i, c in ipairs(missing) do
+        for slotIndex, c in ipairs(missing) do
             if c.tier == tier then
-                selected = table.remove(missing, i)
+                selected = table.remove(missing, slotIndex)
                 break
             end
         end
@@ -1224,7 +1237,6 @@ function E:resolvePorts()
         )
         task.s.bee = { tier = tier, cell = selected, loading = task.loading, phase = 'back' }
         task.s.lease = { [tier] = true }
-        self.beeChecked[task.a.address] = nil
     end
     for _, missing in pairs(ports.holes) do
         assert(
@@ -1342,7 +1354,6 @@ function E:collectOrder(order, idle)
     end
     b.count = b.count + assigned
     b.phase = 'admit'
-    b.admitting = true
     s.batch = b
     self.s.admission = { members = { selected.address } }
     order.count = order.count - assigned
@@ -1396,7 +1407,7 @@ function E:schedule()
     local index = 0
     local members = {}
     for _, a in ipairs(chosen) do
-        local b = { key = order.key, count = 0, workers = {}, phase = 'admit', admitting = true }
+        local b = { key = order.key, count = 0, workers = {}, phase = 'admit' }
         for _, n in ipairs(a.nodes) do
             if index < active then
                 index = index + 1
@@ -1431,7 +1442,7 @@ function E:admissionTick()
         if b.phase == 'admit' then
             for _, w in ipairs(b.workers) do
                 local cached = self:worker(w)
-                if not w.accepted and not cached.accepted and not cached.intake then
+                if not w.accepted and not cached.intake then
                     return
                 end
             end
@@ -1448,7 +1459,7 @@ function E:admissionTick()
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
-            if not w.accepted and not self:worker(w).accepted then
+            if not w.accepted then
                 self.io.proxy(w.address).setWorkAllowed(false)
             end
         end
@@ -1458,14 +1469,10 @@ function E:admissionTick()
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
             self:recipe(b, w)
-            if b.collection then
-                w.accepted = true
-            end
-            self:worker(w).accepted = true
+            w.accepted = true
         end
         b.reserve = self.U.scale(self.s.patterns[b.key].unit, b.count)
         b.phase = 'wait'
-        b.admitting = nil
         if b.collection then
             b.collection.elapsed = 0
             self.collectAt[id] = self.now
@@ -1478,6 +1485,8 @@ function E:admissionTick()
         end
     end
     self.s.admission = nil
+    self.status[self.cfg.channels[1].id] = queued and '算力奇点还有原料待领取'
+        or '本单已取完'
     self.resourcesAt = nil
     self.save()
     return ready
@@ -1543,9 +1552,8 @@ function E:support(a, meta)
 end
 
 function E:bees(a, s, want)
-    local checked = self.beeChecked[a.address]
     if not s.bee then
-        local current = checked and checked.tier
+        local current = self.provided[a.address]
         if current == want then
             s.request = nil
             return true
@@ -1626,9 +1634,7 @@ function E:bees(a, s, want)
             or self.log:stack(box, c.slot).storedItemCount
         s.rawCount = nil
         s.lease, s.counts, s.reuse = nil, {}, nil
-        count = 0
     end
-    self.beeChecked[a.address] = { tier = current, count = count }
     self.provided[a.address] = current
     s.bee = nil
     if not b.loading and want then
@@ -1773,7 +1779,7 @@ function E:array(a)
         local pending = {}
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
-            if not w.accepted and not cached.accepted and not cached.intake then
+            if not w.accepted and not cached.intake then
                 pending[#pending + 1] = w
             end
         end
@@ -1805,9 +1811,6 @@ function E:array(a)
             math.ceil(math.max(0, self.cfg.singularityWait - b.collection.elapsed))
         )
     elseif b.phase == 'wait' then
-        if b.admitting then
-            return
-        end
         self:support(a, meta)
         if not self:grant(b) then
             if self:pulse() then
@@ -1922,21 +1925,16 @@ function E:drain()
     if failed then
         error('无法完成已接订单：' .. failed .. ' / ' .. reason)
     end
-    if #self.s.queue > 0 then
+    if not self.recovered or #self.s.queue > 0 or self.s.admission then
         return false
-    end
-    if self.s.admission then
-        return false
-    end
-    for _, c in ipairs(self.cfg.channels) do
-        if next(self:items(c.buffer)) then
-            return false
-        end
     end
     for _, a in ipairs(self.arrays) do
         if self.s.arrays[a.address].batch then
             return false
         end
+    end
+    if next(self:items(self.cfg.channels[1].buffer)) then
+        return false
     end
     for _, a in ipairs(self.arrays) do
         if not self:hold(a) or not self:bees(a, self.s.arrays[a.address], nil) then
@@ -1971,9 +1969,12 @@ end
 
 function E:prepareArrays()
     local deadline = self.io.time() + 0.15
-    for _, a in ipairs(self.arrays) do
+    for _ = 1, #self.arrays do
+        local index = self.prepareIndex
+        local a = self.arrays[index]
+        self.prepareIndex = index % #self.arrays + 1
         local b = self.s.arrays[a.address].batch
-        if b and b.phase == 'wait' and not b.admitting then
+        if b and b.phase == 'wait' then
             if self:arrayTick(a) then
                 return true
             end
@@ -3042,7 +3043,7 @@ function F:act(action, button)
             self:act(action == 'up' and 'prev' or 'next')
         else
             self.pos = math.max(1, self.pos + (action == 'up' and -1 or 1))
-            self.offset = 1
+            self.boxPage, self.offset = 1, 1
             self.selected = {}
         end
     elseif action == 'prev' or action == 'next' then
@@ -3396,7 +3397,7 @@ function F:drawFluids(x, width, b)
         if editing then
             ui:control('confirm-edit', x, editTop + 5, '确认')
             ui:control('cancel-edit', x + 10, editTop + 5, '取消')
-            ui:put(x + 20, editTop + 5, 'Enter 确认', width - 20, ink.dim)
+            ui:put(x + 20, editTop + 5, '回车确认', width - 20, ink.dim)
         end
     else
         ui:put(x, editTop + 2, '点击表格中的值修改配置', width, ink.dim)
@@ -3404,7 +3405,7 @@ function F:drawFluids(x, width, b)
     ui:put(
         x,
         b.status,
-        '位置：驱动器编号/固定槽位；关闭后保留位置',
+        '关闭预缓存后，使用该流体的配方也无法开工。',
         width,
         ink.dim
     )
@@ -3415,6 +3416,26 @@ function F:draw()
     local ink = ui.ink
     ui:begin('BEC / 多观测阵列配置')
     local w, h = ui.w, ui.h
+    if self.popup and self.popup.clearRecipes then
+        local width = math.min(68, w - 4)
+        local x, y = math.floor((w - width) / 2) + 1, math.floor((h - 10) / 2)
+        ui:frame(x, y, width, y + 10)
+        ui:put(x + 2, y + 1, self.popup.title, width - 4, ink.green)
+        for i, option in ipairs(self.popup.options) do
+            local line = y + i * 3
+            ui:control(
+                'pick:' .. i,
+                x + 2,
+                line,
+                option.label,
+                option.value == self.popup.current,
+                width - 4
+            )
+            ui:put(x + 6, line + 1, option.detail, width - 8, 0x999999)
+        end
+        ui:paint()
+        return
+    end
     local left = w >= 120 and 30 or 20
     local x = left + 3
     local width = w - x - 1
@@ -3496,7 +3517,7 @@ function F:draw()
     self.perPage = math.max(1, math.floor((h - 13) / stride))
     if self.popup then
         local p = self.popup
-        local step = p.clearRecipes and 3 or (p.options[1] and p.options[1].detail and 2 or 1)
+        local step = p.options[1] and p.options[1].detail and 2 or 1
         local per = math.floor((h - 15) / step)
         self.optionPages = math.max(1, math.ceil(#p.options / per))
         p.page = math.min(p.page, self.optionPages)
@@ -3514,14 +3535,7 @@ function F:draw()
                 width
             )
             if step >= 2 then
-                local indent = p.clearRecipes and 4 or 0
-                ui:put(
-                    x + indent,
-                    y + 1,
-                    v.detail or '',
-                    width - indent,
-                    p.clearRecipes and 0x999999 or ink.dim
-                )
+                ui:put(x, y + 1, v.detail or '', width, ink.dim)
             end
         end
         if #p.options == 0 then
@@ -3533,9 +3547,7 @@ function F:draw()
         if p.all then
             ui:control('all', x + 14, b.status, '全选未分配')
         end
-        if not p.clearRecipes then
-            ui:control('back', x + 34, b.status, '返回')
-        end
+        ui:control('back', x + 34, b.status, '返回')
     elseif o and o.kind == 'box' then
         self:drawBox(o, x, width)
     elseif o and o.kind == 'fluids' then
@@ -3588,24 +3600,13 @@ function F:draw()
             )
         end
     end
-    if self.popup and self.popup.clearRecipes then
-        ui:wrap(
-            2,
-            h - 2,
-            '确认后立即清除并保存；请选择取消或确认清除',
-            w - 3,
-            2,
-            ink.amber
-        )
-    else
-        ui:control('prev', x, b.nav, '上一页')
-        ui:control('next', x + 12, b.nav, '下一页')
-        ui:control('refresh', x + 24, b.nav, 'F 刷新')
-        ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
-        ui:control('save', 2, h, 'S 保存并返回')
-        ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
-        ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
-    end
+    ui:control('prev', x, b.nav, '上一页')
+    ui:control('next', x + 12, b.nav, '下一页')
+    ui:control('refresh', x + 24, b.nav, 'F 刷新')
+    ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
+    ui:control('save', 2, h, 'S 保存并返回')
+    ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
+    ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
     ui:paint()
 end
 
@@ -3938,13 +3939,10 @@ local function phase(e, b, s)
     if s and s.request then
         return '等待 T' .. s.request.tier .. ' 蜂群'
     end
-    if b.admitting then
-        return '节点取料'
-    end
     if b.phase == 'wait' and not b.granted then
         local demand = 0
-        for _, amount in pairs(b.reserve or {}) do
-            demand = demand + amount
+        for _, required in pairs(b.reserve or {}) do
+            demand = demand + required
         end
         if demand > e.cfg.fieldLimit then
             return '场强容量不足',
@@ -3957,8 +3955,8 @@ local function phase(e, b, s)
         if not e.free or e.resourceScan then
             return '核对凝聚物库存'
         end
-        for id, amount in pairs(b.reserve or {}) do
-            if amount > (e.free[id] or 0) then
+        for id, required in pairs(b.reserve or {}) do
+            if required > (e.free[id] or 0) then
                 return '等待凝聚物'
             end
         end
@@ -4106,7 +4104,9 @@ function G:runtime(e, refill)
     for _, c in ipairs(e.cfg.channels) do
         channels[#channels + 1] = {
             label = '接单：' .. self:recordName(e.cfg, 'channels', c),
-            status = e.status[c.id] or '等待',
+            status = e.s.admission and '本单取料中，已锁定下单接口'
+                or e.status[c.id]
+                or '等待',
             error = e.errors[c.id],
         }
     end
@@ -4400,12 +4400,10 @@ function G:arrayPanel(e, x, top, width, bottom)
                     status = observed and '本批完成' or '待读取'
                 else
                     local cached = (e.nodeCache or {})[address]
-                    local accepted = b.phase ~= 'admit'
-                        or worker.accepted
-                        or cached and cached.worker == worker and cached.accepted
+                    local accepted = b.phase ~= 'admit' or worker.accepted
                     status = (
                         accepted and '已取料 '
-                        or cached and cached.intake and '取料中 '
+                        or cached and cached.worker == worker and cached.intake and '取料中 '
                         or '准备取料 '
                     )
                         .. worker.count
@@ -4894,21 +4892,80 @@ function R.check(cfg, old, U, proxy)
         )
     end
     local arrays = U.index(cfg.arrays, 'address')
+    local oldInv, newInv = U.index(old.inventories), U.index(cfg.inventories)
+    local oldPools, newPools = U.index(old.beePools), U.index(cfg.beePools)
+    local function sameContainer(oldId, newId)
+        local from, to = oldInv[oldId], newInv[newId]
+        return from and to and from.transposer == to.transposer and from.side == to.side
+    end
+    -- Adding slots preserves the return path of an already loaded set.
+    local function keepsBeeRoute(a, b)
+        if
+            not b
+            or not b.enabled
+            or b.beePool ~= a.beePool
+            or not sameContainer(a.loadPort, b.loadPort)
+            or not sameContainer(a.unloadPort, b.unloadPort)
+        then
+            return false
+        end
+        local boxes = U.index(b.beeBoxes, 'box')
+        for _, box in ipairs(a.beeBoxes) do
+            local nextBox = boxes[box.box]
+            if not nextBox or not sameContainer(box.inventory, nextBox.inventory) then
+                return false
+            end
+        end
+        local oldCells, newCells = oldPools[a.beePool].cells, newPools[b.beePool].cells
+        if U.equal(oldCells, newCells) then
+            return true
+        end
+        local slots = {}
+        for _, c in ipairs(newCells) do
+            slots[c.box .. ':' .. c.slot] = c.tier
+        end
+        for _, c in ipairs(oldCells) do
+            if slots[c.box .. ':' .. c.slot] ~= c.tier then
+                return false
+            end
+        end
+        return true
+    end
     for _, a in ipairs(old.arrays or {}) do
         local nextArray = arrays[a.address]
-        if a.enabled and (not U.equal(a, nextArray) or old.storage ~= cfg.storage) then
+        local routeChanged = a.enabled and not keepsBeeRoute(a, nextArray)
+        if routeChanged then
+            local node = proxy(a.nodes[1].address)
+            local tip = '请先按 Q 等待蜂群归位，再修改阵列的蜂群连接：'
+                .. a.address
+            assert(not node or not node.getProvidedTier(), tip)
+            for _, id in ipairs({ a.loadPort, a.unloadPort }) do
+                local port = oldInv[id]
+                local mover = proxy(port.transposer)
+                assert(
+                    not mover
+                        or not (
+                            mover.getStackInSlot(port.side, 1)
+                            or mover.getStackInSlot(port.side, 7)
+                        ),
+                    tip
+                )
+            end
+        end
+        if
+            a.enabled and (routeChanged or not U.equal(a, nextArray) or old.storage ~= cfg.storage)
+        then
             local bound = nextArray and nextArray.enabled and U.index(nextArray.nodes, 'address')
                 or {}
             for _, n in ipairs(a.nodes) do
                 local same = bound[n.address]
                     and old.storage == cfg.storage
                     and nextArray.diode == a.diode
-                    and nextArray.beePool == a.beePool
-                    and nextArray.loadPort == a.loadPort
-                    and nextArray.unloadPort == a.unloadPort
-                if not same and proxy(n.address) then
+                    and not routeChanged
+                if not same then
+                    local node = proxy(n.address)
                     assert(
-                        not proxy(n.address).hasWork(),
+                        not node or not node.hasWork(),
                         '请保留正在加工的传送节点：' .. n.address
                     )
                 end
@@ -5330,7 +5387,7 @@ function S.new(base, fs, serialization, yield)
         if count > 0 then
             self.write('multi.state', { patterns = {} })
         end
-        return count, {}
+        return count
     end
     return self
 end

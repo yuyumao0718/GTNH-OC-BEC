@@ -263,3 +263,110 @@ do
     end
 end
 print('  PASS a bee waiter retries between scans without rereading node progress')
+
+do
+    local w = make(30, 0, { nodes = 1 })
+    w.stock.entangled_neutronium = 144
+    for i = 1, 30 do
+        local node = w.nodes['a' .. i .. ':n1']
+        node.active, node.count = true, i < 30 and 2 or 1
+    end
+    w.boot()
+    local overhead = 0
+    w.e.io.time = function()
+        return math.floor(w.time + overhead * 20) / 20
+    end
+    w.e.io.pulse = function()
+        overhead = overhead + 0.012
+    end
+    for _ = 1, 1000 do
+        w.tick()
+        if w.state.arrays.a30.done == 1 then
+            break
+        end
+    end
+    assert(w.state.arrays.a30.done == 1 and w.produced == 1)
+    assert(w.stock.entangled_neutronium == 0)
+    for i = 1, 29 do
+        assert(w.state.arrays['a' .. i].batch.phase == 'wait')
+    end
+end
+print('  PASS the 30th recovered array starts with 144 L while 29 larger batches wait')
+
+do
+    local w = make(1, 16, { nodes = 2, stageTicks = 100 })
+    for _ = 1, 200 do
+        w.tick()
+        if w.state.arrays.a1.batch and w.state.arrays.a1.batch.started then
+            break
+        end
+    end
+    assert(w.state.arrays.a1.batch.started)
+    w.e:requestStop()
+    local reader = w.components.receiver
+    local read, reads = reader.getItemsInNetwork, 0
+    reader.getItemsInNetwork = function()
+        reads = reads + 1
+        return read()
+    end
+    for _ = 1, 100 do
+        assert(not w.e:drain())
+    end
+    assert(reads == 0)
+    for _ = 1, 2000 do
+        w.tick()
+        if w.e:drain() then
+            break
+        end
+    end
+    assert(w.produced == 16 and w.e:drain() and reads > 0 and w.arrays.a1.bees == 0)
+end
+print('  PASS Q checks AE only after the last active batch and returns its bee set')
+
+do
+    local R = dofile(ROOT .. 'ma_recovery.lua')
+    local w = make(2, 0, { nodes = 1 })
+    w.share({ { tier = 1, slot = 1, count = 32 } })
+    w.boot()
+    local a = w.cfg.arrays[1]
+    for _ = 1, 30 do
+        if w.e:bees(a, w.state.arrays.a1, 1) then
+            break
+        end
+        w.advance()
+    end
+    assert(w.arrays.a1.bees == 32)
+    w.e:pause()
+    local cfg = U.copy(w.cfg)
+    cfg.arrays[1].name = '改名'
+    cfg.beePools[1].cells[2] = { tier = 2, box = 1, slot = 2 }
+    assert(R.check(cfg, w.cfg, U, function()
+        error('unrelated settings read a machine')
+    end))
+    local function refuses(nextCfg)
+        local ok, err = pcall(R.check, nextCfg, w.cfg, U, w.e.io.proxy)
+        assert(not ok and tostring(err):find('蜂群归位', 1, true))
+    end
+    cfg.arrays[1].enabled = false
+    refuses(cfg)
+    local remapped = U.copy(w.cfg)
+    U.index(remapped.inventories)[a.unloadPort].side = 4
+    refuses(remapped)
+    local slot = U.copy(w.cfg)
+    slot.beePools[1].cells[1].slot = 2
+    refuses(slot)
+    w.e:requestStop()
+    for _ = 1, 100 do
+        w.tick()
+        if w.e:drain() then
+            break
+        end
+    end
+    assert(w.arrays.a1.bees == 0 and w.sharedCells[1].storedItemCount == 32)
+    assert(R.check(cfg, w.cfg, U, w.e.io.proxy))
+    w.inventories[a.loadPort].slots[1] = w.sharedCells[1]
+    refuses(cfg)
+end
+print(
+    '  PASS a retained or moving set blocks rewiring, while names, additions and returned sets are safe'
+)

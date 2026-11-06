@@ -148,7 +148,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
             break
         end
     end
-    assert(batch and batch.phase == 'admit' and batch.admitting)
+    assert(batch and batch.phase == 'admit')
     e, r = w.e, w.r
     e.io.proxy = function()
         error('rendering queried machine components')
@@ -161,8 +161,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
 
     batch.phase = 'wait'
     batch.reserve = { entangled_neutronium = batch.count * 144 }
-    batch.admitting, e.s.admission = nil, nil
-    w.state.arrays.a2.batch.admitting = nil
+    e.s.admission = nil
     e.resourcesFresh, e.resourceScan = false, nil
     e.free = nil
     ui:runtime(e, r)
@@ -223,7 +222,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     for _ = 1, 100 do
         shortage.tick()
         local b = e.s.arrays.a1.batch
-        if b and b.phase == 'wait' and not b.admitting and e.free and not e.resourceScan then
+        if b and b.phase == 'wait' and e.free and not e.resourceScan then
             e.io.proxy = function()
                 error('rendering queried machine components')
             end

@@ -164,7 +164,7 @@ for _, where in ipairs({ 'array', 'channel' }) do
 end
 print('  PASS save errors stop dispatch instead of being isolated as machine faults')
 
--- Idle state is not dirty; actual recoverable timers and generator progress are.
+-- Periodic save attempts on an idle engine must not write to disk.
 do
     local w = make(6, 0, { nodes = 16 })
     w.addFeed('raw', 1)
@@ -176,7 +176,7 @@ do
     local saves = w.saves
     for _ = 1, 2000 do
         w.tick()
-        if w.time % 100 == 0 and w.e.dirty then
+        if w.time % 100 == 0 then
             w.e.save()
         end
     end

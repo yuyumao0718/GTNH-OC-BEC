@@ -87,7 +87,7 @@ function S.new(base, fs, serialization, yield)
         if count > 0 then
             self.write('multi.state', { patterns = {} })
         end
-        return count, {}
+        return count
     end
     return self
 end
