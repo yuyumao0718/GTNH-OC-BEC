@@ -1,4 +1,4 @@
--- Arrays yield while hardware is pending; all durable state contains plain tables.
+-- The machines own the active work. Only learned recipes are written to disk.
 local E = {}
 E.__index = E
 local function cellKey(c)
@@ -27,7 +27,6 @@ function E.new(cfg, state, io, modules)
         observations = {},
         provided = {},
         beeChecked = {},
-        beeCounts = {},
         held = {},
         nodeCache = {},
         maxParallel = {},
@@ -42,17 +41,32 @@ function E.new(cfg, state, io, modules)
         cells = {},
         boxes = {},
     }, E)
-    for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
-        state[key] = state[key] or {}
+    local learned = {}
+    for key, meta in pairs(state.patterns or {}) do
+        if meta.unit and meta.pattern and next(meta.pattern.inputs) then
+            learned[key] = meta
+        end
     end
-    state.nextId = state.nextId or 1
+    for key in pairs(state) do
+        state[key] = nil
+    end
+    state.patterns, state.arrays, state.queue, state.nextId = learned, {}, {}, 1
+    self.charge, self.effective = {}, {}
     self.save = function()
+        if not self.learnedDirty then
+            return
+        end
+        local patterns = {}
+        for k, meta in pairs(state.patterns) do
+            if meta.unit and next(meta.pattern.inputs) then
+                patterns[k] = meta
+            end
+        end
         self.saveFailed = true
-        io.save(state)
-        self.saveFailed = nil
-        self.dirty = nil
+        io.save({ patterns = patterns })
+        self.saveFailed, self.learnedDirty = nil, nil
     end
-    self.log = modules.Log.new(cfg, state, io.proxy, self.save, self.U)
+    self.log = modules.Log.new(cfg, io.proxy, self.U)
     self.pools = self.U.index(cfg.beePools)
     for _, b in ipairs(cfg.bands) do
         for _, m in ipairs(self.M) do
@@ -192,7 +206,6 @@ function E:check()
         '公共原料子网 ME 控制器不支持物品变化事件，请检查 OC 版本'
     )
     self:catalogsRead()
-    local needed = 0
     for _, a in ipairs(self.arrays) do
         local d = self.io.proxy(a.diode)
         assert(d.hasWork() and d.isWorkAllowed(), '请先启动麦克斯韦门：' .. a.address)
@@ -201,29 +214,6 @@ function E:check()
                 self.log:size(id) == 12,
                 '蜂群 ME-IO 端口选择有误，请检查转运器和端口方向：' .. id
             )
-        end
-        local s = self.s.arrays[a.address]
-        local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
-        self.provided[a.address] = provided and provided.tier
-        assert(
-            not provided or s and s.lease and s.lease[provided.tier],
-            '阵列内的蜂群没有借用记录，请运行 bec_multi.lua recover 指定归还位置：'
-                .. a.address
-        )
-        for _, n in ipairs(a.nodes) do
-            assert(
-                not self.io.proxy(n.address).hasWork()
-                    or self.s.arrays[a.address] and self.s.arrays[a.address].batch,
-                '节点正在加工，但找不到续做记录，请运行 bec_multi.lua recover：'
-                    .. n.address
-            )
-            local node = self.io.proxy(n.address)
-            if node.hasWork() and s and s.batch and s.batch.started and s.batch.granted then
-                local consumed = node.getConsumedCondensate()
-                for k, v in pairs(node.getRequiredCondensate()) do
-                    needed = needed + v - (consumed[k] or 0)
-                end
-            end
         end
     end
     assert(
@@ -234,20 +224,18 @@ function E:check()
         self.U.total(self.storage.getStoredCondensate()) <= self.cfg.fieldLimit,
         '凝聚物库存超过设置的场强容量'
     )
-    assert(
-        needed <= self.cfg.fieldLimit,
-        '节点剩余凝聚物需求超过场强容量，请提高场强或完成部分任务后再降低'
-    )
     return true
 end
 
 function E:start()
+    self.wasEnabled = {}
+    for _, a in ipairs(self.arrays) do
+        self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
+    end
     self:pause()
     self:check()
+    self:scanBees()
     for _, a in ipairs(self.arrays) do
-        self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
-        local s = self.s.arrays[a.address]
-        s.counts = s.counts or {}
         for _, n in ipairs(a.nodes) do
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
@@ -259,7 +247,6 @@ function E:start()
     end
     self.fieldProgress = self.storage.getWorkProgress()
     self.ready = false
-    self.save()
 end
 
 function E:channel(c)
@@ -306,7 +293,6 @@ function E:channel(c)
     self.s.queue[1] = { id = self.s.nextId, key = p.key, count = count }
     self.s.nextId = self.s.nextId + 1
     self.settled[c.id] = nil
-    self.save()
     self:subscribe(false)
 end
 
@@ -393,6 +379,12 @@ function E:resources(force)
             end
             -- Publish only a complete ledger; no new grants are issued during this scan.
             local stock = self:stockRead(force)
+            if not self.reserved then
+                assert(
+                    self.U.total(reserved) <= self.cfg.fieldLimit,
+                    '已开工节点的剩余凝聚物需求超过场强容量'
+                )
+            end
             self.stock, self.reserved = stock, reserved
             self.free = {}
             for k, v in pairs(self.stock) do
@@ -435,7 +427,6 @@ function E:grant(b)
     b.granted = true
     self.U.add(self.reserved, b.reserve)
     self.U.add(self.free, b.reserve, -1)
-    self.save()
     return true
 end
 
@@ -477,61 +468,154 @@ function E:beeAccess(a, c)
     return self.boxes[a.address][c.box]
 end
 
-function E:beeCount(a, c, value)
-    local counts = self.s.poolCounts[a.beePool] or {}
-    self.s.poolCounts[a.beePool] = counts
-    local key = cellKey(c)
-    if value then
-        counts[key] = value
-    end
-    if not counts[key] then
-        local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
-        if stack and stack.storedItemCount > 0 then
-            counts[key] = stack.storedItemCount
+-- A slot is reserved only while its cell is physically in an ME-IO port.
+function E:scanBees()
+    local pending, holes = {}, {}
+    for _, a in ipairs(self.arrays) do
+        local s = { done = 0, counts = {} }
+        self.s.arrays[a.address] = s
+        local n = self.io.proxy(a.nodes[1].address)
+        local provided = n.getProvidedTier()
+        local tier = provided and provided.tier
+        local count = tier and n.getAvailableNanites() or 0
+        self.beeChecked[a.address] = { tier = tier, count = count }
+        self.provided[a.address] = tier
+        if tier then
+            s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
+        end
+        if not self.charge[a.beePool] then
+            local charge, missing = {}, {}
+            self.charge[a.beePool], holes[a.beePool] = charge, missing
+            for _, c in ipairs(self.pools[a.beePool].cells) do
+                local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
+                if stack then
+                    charge[cellKey(c)] = stack.storedItemCount
+                else
+                    missing[#missing + 1] = c
+                end
+            end
+        end
+        for _, port in ipairs({ a.loadPort, a.unloadPort }) do
+            local input = self.log:stack(port, 1)
+            local output = self.log:stack(port, 7)
+            if input or output then
+                local loading = port == a.loadPort
+                pending[#pending + 1] = {
+                    a = a,
+                    s = s,
+                    loading = loading,
+                    tier = (loading and output or not loading and input) and tier or nil,
+                }
+            end
         end
     end
-    return counts[key] or 1
+    local function priority(task)
+        if task.tier then
+            return 1
+        end
+        return task.loading and 2 or 3
+    end
+    table.sort(pending, function(a, b)
+        return priority(a) < priority(b)
+    end)
+    self.ports = { pending = pending, holes = holes, index = 1 }
+    return self:resolvePorts()
+end
+
+function E:resolvePorts()
+    local ports = self.ports
+    for i = ports.index, #ports.pending do
+        local task = ports.pending[i]
+        local missing = ports.holes[task.a.beePool]
+        local tier = task.tier or (missing[1] and missing[1].tier)
+        if not task.tier then
+            for _, c in ipairs(missing) do
+                if c.tier ~= tier then
+                    -- A loading port will reveal the grade on its own array after the IO cycle.
+                    assert(
+                        task.loading,
+                        '蜂群元件在 ME-IO 端口中，无法辨认等级；请按等级归位后重新运行'
+                    )
+                    local n = self.io.proxy(task.a.nodes[1].address)
+                    local provided = n.getProvidedTier()
+                    if not provided then
+                        ports.index = i
+                        return false
+                    end
+                    tier = provided.tier
+                    break
+                end
+            end
+        end
+        local selected
+        for i, c in ipairs(missing) do
+            if c.tier == tier then
+                selected = table.remove(missing, i)
+                break
+            end
+        end
+        assert(
+            selected and not task.s.bee,
+            '请将蜂群 ME-IO 端口中的元件按等级归位后重新运行'
+        )
+        task.s.bee = { tier = tier, cell = selected, loading = task.loading, phase = 'back' }
+        task.s.lease = { [tier] = true }
+        self.beeChecked[task.a.address] = nil
+    end
+    for _, missing in pairs(ports.holes) do
+        assert(
+            #missing == 0,
+            '蜂群池有缺少元件的槽位，请按登记等级归位后重新运行'
+        )
+    end
+    self.ports = nil
+    return true
+end
+
+function E:beeCount(a, c)
+    local high = 0
+    for _, slot in ipairs(self.pools[a.beePool].cells) do
+        if slot.tier == c.tier then
+            high = math.max(high, self.charge[a.beePool][cellKey(slot)] or 0)
+        end
+    end
+    for _, other in ipairs(self.arrays) do
+        if other.beePool == a.beePool then
+            local s = self.s.arrays[other.address]
+            high = math.max(high, s.counts[c.tier] or 0)
+            if s.lease and s.lease[c.tier] then
+                high = math.max(high, s.rawCount or 0)
+            end
+            if s.bee and s.bee.tier == c.tier then
+                high = math.max(high, s.bee.amount or 0)
+            end
+        end
+    end
+    return high
 end
 
 function E:borrow(a, s, tier)
-    if s.lease then
-        return s.lease[tier] ~= nil
-    end
-    local requested = not s.request or s.request.tier ~= tier
-    if requested then
+    if not s.request or s.request.tier ~= tier then
         s.request = { tier = tier, id = self.s.nextId }
         self.s.nextId = self.s.nextId + 1
     end
-    local used, earlier = {}, 0
-    for _, other in ipairs(self.cfg.arrays) do
-        if other.beePool == a.beePool then
-            local state = self.s.arrays[other.address] or {}
-            for _, c in pairs(state.lease or {}) do
-                used[cellKey(c)] = true
-            end
-            if state.request and state.request.tier == tier and state.request.id < s.request.id then
-                earlier = earlier + 1
-            end
+    local earlier = 0
+    for _, other in ipairs(self.arrays) do
+        local req = self.s.arrays[other.address].request
+        if other.beePool == a.beePool and req and req.tier == tier and req.id < s.request.id then
+            earlier = earlier + 1
         end
     end
-    local free = {}
     for _, c in ipairs(self.pools[a.beePool].cells) do
-        if c.tier == tier and not used[cellKey(c)] then
-            free[#free + 1] = c
+        if c.tier == tier and (self.charge[a.beePool][cellKey(c)] or 0) > 0 then
+            if earlier == 0 then
+                s.request = nil
+                s.lease = { [tier] = true }
+                return c
+            end
+            earlier = earlier - 1
         end
     end
-    local c = free[earlier + 1]
-    if not c then
-        if requested then
-            self.save()
-        end
-        return false
-    end
-    s.lease = { [tier] = { tier = tier, box = c.box, slot = c.slot } }
-    s.request = nil
-    s.counts = {}
-    self.save()
-    return true
 end
 
 function E:beeWaiting(a, s)
@@ -592,7 +676,6 @@ function E:awaitFinishing(order, eligible)
             return false
         end
         order.considered = true
-        self.save()
         local samples = {}
         local deadline = self.now + 5
         for _, a in ipairs(eligible) do
@@ -671,15 +754,11 @@ function E:collections()
             local c = b.collection
             local elapsed = math.max(0, self.now - (self.collectAt[a.address] or self.now))
             c.elapsed = c.elapsed + elapsed
-            if elapsed > 0 then
-                self.dirty = true
-            end
             self.collectAt[a.address] = self.now
             if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
                 self.resourcesAt = nil
                 self.collectAt[a.address] = nil
-                self.save()
             end
         else
             self.collectAt[a.address] = nil
@@ -707,7 +786,6 @@ function E:collectOrder(order, idle)
     for _, w in ipairs(b.workers) do
         used[w.address] = true
     end
-    local previous = b.count
     local assigned = 0
     for _, n in ipairs(selected.nodes) do
         if not used[n.address] and assigned < order.count then
@@ -719,17 +797,12 @@ function E:collectOrder(order, idle)
     b.phase = 'admit'
     b.admitting = true
     s.batch = b
-    self.s.admission = {
-        count = assigned,
-        members = { selected.address },
-        previous = previous,
-    }
+    self.s.admission = { members = { selected.address } }
     order.count = order.count - assigned
     if order.count == 0 then
         self.s.queue = {}
     end
     self.finishWait = nil
-    self.save()
 end
 
 function E:schedule()
@@ -798,10 +871,9 @@ function E:schedule()
         self.s.arrays[a.address].batch = b
         members[#members + 1] = a.address
     end
-    -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
-    self.s.admission = { count = order.count, members = members }
+    -- The shared gate remains closed until every intake is confirmed.
+    self.s.admission = { members = members }
     self.s.queue = {}
-    self.save()
 end
 
 function E:admissionTick()
@@ -818,9 +890,6 @@ function E:admissionTick()
             for _, w in ipairs(b.workers) do
                 local cached = self:worker(w)
                 if not w.accepted and not cached.accepted and not cached.intake then
-                    return
-                end
-                if cached.verifyRecipe then
                     return
                 end
             end
@@ -842,7 +911,7 @@ function E:admissionTick()
             end
         end
     end
-    local ready = {}
+    local ready = false
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
@@ -863,43 +932,32 @@ function E:admissionTick()
             end
         end
         if b.phase == 'wait' then
-            ready[#ready + 1] = id
+            ready = true
         end
     end
     self.s.admission = nil
     self.resourcesAt = nil
     self.save()
-    return #ready > 0 and ready or nil
+    return ready
 end
 
-function E:recipe(b, w, verify)
-    local meta = self.s.patterns[b.key]
+function E:recipe(b, w)
     local own = self.s.patterns[w.key or b.key]
-    if not own.unit or verify then
+    if not own.unit then
         local n = self.io.proxy(w.address)
         local count = n.getParallelRecipesInProgress()
-        if verify then
-            assert(
-                count == w.count and n.getWorkProgress() == 0,
-                '节点实际取料份数与续做分配不一致，或已开始加工：'
-                    .. w.address
-            )
-        end
         local unit = {}
         for name, amount in pairs(n.getRequiredCondensate()) do
             unit[name] = amount / count
         end
-        local steps = self.N.steps(n.getRecipeSteps())
-        assert(
-            not own.unit or self.U.equal(own.unit, unit) and self.U.equal(own.steps, steps),
-            '节点配方与续做记录不一致：' .. w.address
-        )
-        own.unit, own.steps = unit, steps
+        own.unit, own.steps = unit, self.N.steps(n.getRecipeSteps())
+        self.learnedDirty = true
     end
     if w.key then
+        local base = self.s.patterns[b.key]
         assert(
-            self.U.equal(meta.unit, own.unit) and self.U.equal(meta.steps, own.steps),
-            '算力奇点配方与已记录的处理样板不一致'
+            self.U.equal(base.unit, own.unit) and self.U.equal(base.steps, own.steps),
+            '算力奇点处理样板的凝聚物需求或蜂群阶段不一致'
         )
     end
 end
@@ -944,211 +1002,192 @@ end
 
 function E:bees(a, s, want)
     local checked = self.beeChecked[a.address]
-    if not s.bee and checked and checked.tier == want then
-        if want and checked.count > 0 then
-            return true
-        elseif not want and checked.count == 0 and not s.lease and not s.request then
+    if not s.bee then
+        local current = checked and checked.tier
+        if current == want then
+            s.request = nil
             return true
         end
-    end
-    local n = self.io.proxy(a.nodes[1].address)
-    local current
-    if not s.bee and not s.request then
-        if checked then
-            current = checked.tier
-        else
-            local provided = n.getProvidedTier()
-            current = provided and provided.tier
-        end
-        self.provided[a.address] = current
-    end
-    if not s.bee and current == want then
-        local count = checked and checked.count or n.getAvailableNanites()
-        self.beeChecked[a.address] = { tier = current, count = count }
-        if not want then
-            if count ~= 0 then
+        local cell
+        if current then
+            for _, c in ipairs(self.pools[a.beePool].cells) do
+                if c.tier == current and self.charge[a.beePool][cellKey(c)] == 0 then
+                    cell = c
+                    break
+                end
+            end
+            if not cell then
                 return false
             end
-            if s.lease or s.request then
-                s.lease = nil
-                s.request = nil
-                s.counts = {}
-                s.reuse = nil
-                self.save()
-            end
-            return true
-        end
-        if count > 0 then
-            return true
-        end
-    end
-    if not s.bee then
-        if not current then
-            if s.lease and not s.lease[want] then
-                s.lease = nil
-                s.counts = {}
-                self.save()
-            end
-            if not self:borrow(a, s, want) then
+        else
+            cell = self:borrow(a, s, want)
+            if not cell then
                 self.status[a.address] = '等待 T' .. want .. ' 蜂群'
                 return false
             end
         end
-        local tier = current or want
-        assert(s.lease and s.lease[tier], '阵列内的蜂群没有借用记录')
-        self.beeChecked[a.address] = nil
-        s.bee = { tier = tier, loading = not current, phase = 'out' }
+        local amount = self.charge[a.beePool][cellKey(cell)]
+        self.charge[a.beePool][cellKey(cell)] = nil
+        s.bee = {
+            cell = cell,
+            amount = amount,
+            tier = current or want,
+            loading = not current,
+            phase = 'out',
+        }
     end
     local b = s.bee
-    local cell = s.lease[b.tier]
-    local box = self:beeAccess(a, cell)
+    local c = b.cell
+    local box = self:beeAccess(a, c).inventory
     local port = b.loading and a.loadPort or a.unloadPort
-    local slot = cell.slot
-    local owner = 'bee:' .. a.address
     self.status[a.address] = (b.loading and '装载 T' or '回收 T') .. b.tier .. ' 蜂群'
     if b.phase == 'out' then
-        if not self.log:step(owner, box.inventory, port, slot, 1, true) then
+        if not self.log:transfer(box, port, c.slot, 1) then
             return false
         end
         b.phase = 'back'
-        self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    -- Existing checkpoints can still name the return wait 'io'.
-    if b.phase == 'back' or b.phase == 'io' then
-        if not self.log:step(owner, port, box.inventory, 7, slot) then
+    if b.phase == 'back' then
+        if not self.log:transfer(port, box, 7, c.slot) then
             return false
         end
         b.phase = 'sync'
-        self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    if b.phase == 'sync' then
-        local count
-        if b.loading then
-            local provided = n.getProvidedTier()
-            current = provided and provided.tier
-            if current ~= b.tier then
-                return false
-            end
-            local key = a.beePool .. ':' .. cellKey(cell)
-            count = self.beeCounts[key] or n.getAvailableNanites()
-            if count == 0 then
-                return false
-            end
-            self.beeCounts[key] = count
-        else
-            count = n.getAvailableNanites()
-            current = nil
+    local n = self.io.proxy(a.nodes[1].address)
+    local current, count
+    if b.loading then
+        local provided = n.getProvidedTier()
+        if not provided or provided.tier ~= b.tier then
+            return false
         end
-        self.provided[a.address] = current
-        if b.loading or count == 0 then
-            if b.loading then
-                s.counts[b.tier] = count
-                self:beeCount(a, cell, s.counts[b.tier])
-            else
-                s.lease = nil
-                s.counts = {}
-                s.reuse = nil
-            end
-            self.beeChecked[a.address] = { tier = current, count = count }
-            s.bee = nil
-            self.save()
-            if not b.loading and want then
-                return self:bees(a, s, want)
-            end
-            return current == want
+        current = b.tier
+        local cacheKey = a.address .. ':' .. current .. ':' .. tostring(b.amount)
+        count = b.amount and self.effective[cacheKey] or n.getAvailableNanites()
+        if count == 0 then
+            return false
         end
+        self.effective[cacheKey] = count
+        s.rawCount = b.amount
+        self.charge[a.beePool][cellKey(c)] = 0
+        s.counts[current] = count
+    else
+        if n.getAvailableNanites() ~= 0 then
+            return false
+        end
+        self.charge[a.beePool][cellKey(c)] = s.rawCount
+            or self.log:stack(box, c.slot).storedItemCount
+        s.rawCount = nil
+        s.lease, s.counts, s.reuse = nil, {}, nil
+        count = 0
     end
-    return false
+    self.beeChecked[a.address] = { tier = current, count = count }
+    self.provided[a.address] = current
+    s.bee = nil
+    if not b.loading and want then
+        return self:bees(a, s, want)
+    end
+    return current == want
 end
 
+-- The 15 circuit singularities in 2.9.0-beta-3 share this recipe. Compressed
+-- circuit arrays have the same tier sequence but use different condensates.
+local singularTiers = { 10, 5, 9, 1, 4, 8, 8, 4, 4, 8, 8, 4, 2, 6, 7, 3 }
+local singularUnit = {
+    entangled_neutronium = 147456000,
+    entangled_cosmicneutronium = 147456000,
+    entangled_bedrockium = 147456000,
+    entangled_infinity = 147456000,
+}
 function E:recover(a, s)
-    local b = s.batch
-    if not b then
-        return
-    end
-    if b.phase == 'admit' then
-        self.recoveringIntake = true
-        for _, w in ipairs(b.workers) do
-            if not w.accepted then
-                self:worker(w).verifyRecipe = true
-            end
-        end
-    end
-    if b.collection and not b.started then
-        for _, w in ipairs(b.workers) do
-            if w.accepted then
-                local n = self.io.proxy(w.address)
-                assert(
-                    n.hasWork()
-                        and n.getParallelRecipesInProgress() == w.count
-                        and n.getWorkProgress() == 0,
-                    '算力奇点收集记录与节点不一致，请核对节点：' .. w.address
-                )
-            end
-        end
-    end
-    if b.phase ~= 'run' then
-        return
-    end
-    local meta = self.s.patterns[b.key]
-    local total = 0
-    local workers = {}
-    for _, node in ipairs(a.nodes) do
-        local n = self.io.proxy(node.address)
+    local workers, total, running, unit, steps, parallel =
+        {}, 0, self.wasEnabled[a.address], nil, nil, 0
+    for _, conf in ipairs(a.nodes) do
+        local n = self.io.proxy(conf.address)
         if n.hasWork() then
             local count = n.getParallelRecipesInProgress()
-            assert(count > 0, '无法续做：节点未返回有效的加工份数')
-            local unit = {}
+            local required = {}
             for k, v in pairs(n.getRequiredCondensate()) do
-                unit[k] = v / count
+                required[k] = v / count
             end
+            local recipe = self.N.steps(n.getRecipeSteps())
             assert(
-                self.U.equal(unit, meta.unit)
-                    and self.U.equal(self.N.steps(n.getRecipeSteps()), meta.steps),
-                '节点配方与续做记录不一致'
+                not unit or self.U.equal(unit, required) and self.U.equal(steps, recipe),
+                '同一阵列的节点配方阶段或凝聚物需求不同：' .. a.address
             )
+            unit, steps = required, recipe
             total = total + count
-            workers[#workers + 1] = { address = node.address, count = count }
+            parallel = math.max(parallel, count)
+            workers[#workers + 1] = { address = conf.address, count = count }
+            running = running
+                or n.getWorkProgress() > 0
+                or self.U.total(n.getConsumedCondensate() or {}) > 0
         end
     end
-    assert(total <= b.count, '节点加工份数与剩余原料份数之和超过订单份数')
-    b.workers = workers
-    b.reference = nil
-    self.save()
-end
-
-function E:recoveryIntakes()
-    if not self.recoveringIntake then
+    if total == 0 then
         return
     end
-    local pending = {}
-    for _, a in ipairs(self.arrays) do
-        local b = self.s.arrays[a.address].batch
-        if b and b.phase == 'admit' and not self.errors[a.address] then
-            for _, w in ipairs(b.workers) do
-                local cached = self:worker(w)
-                if not w.accepted and not cached.accepted and cached.verifyRecipe then
-                    pending[#pending + 1] = w.address
-                end
+    local key, matches, singular = nil, 0, false
+    for k, m in pairs(self.s.patterns) do
+        if
+            next(m.pattern.inputs)
+            and self.U.equal(unit, m.unit)
+            and self.U.equal(steps, m.steps)
+        then
+            matches, key = matches + 1, k
+            if m.pattern.singularity then
+                singular = true
             end
         end
     end
-    self.recoveryNodes = {}
-    if #pending > 0 then
-        local first = (self.recoveryCursor or 0) % #pending
-        for offset = 1, math.min(4, #pending) do
-            self.recoveryNodes[pending[(first + offset - 1) % #pending + 1]] = true
+    if not singular and #steps == #singularTiers and self.U.equal(unit, singularUnit) then
+        singular = true
+        for i, t in ipairs(singularTiers) do
+            if steps[i].tier ~= t then
+                singular = false
+                break
+            end
         end
-        self.recoveryCursor = first + math.min(4, #pending)
-    else
-        self.recoveringIntake = nil
-        self.recoveryNodes = nil
+    end
+    if matches ~= 1 or singular then
+        key = 'recovered:' .. a.address
+        self.s.patterns[key] = {
+            pattern = {
+                label = singular and '算力奇点' or '接管的节点任务',
+                inputs = {},
+            },
+            unit = unit,
+            steps = steps,
+        }
+    end
+    local b = {
+        key = key,
+        workers = workers,
+        count = total,
+        reserve = self.U.scale(unit, total),
+        phase = 'wait',
+    }
+    s.batch = b
+    if singular then
+        b.collection = { elapsed = 0 }
+        for _, w in ipairs(workers) do
+            w.accepted = true
+        end
+        if not running and #workers < #a.nodes then
+            b.phase = 'collect'
+            s.reuse = (s.bee or s.lease) and true or nil
+            self.collectAt[a.address] = self.now
+        end
+    end
+    if running then
+        b.phase, b.started, b.granted = 'run', true, true
+        b.fixed = self.N.fastTier(steps, self:beeCells(a), s.counts, parallel)
+        s.reuse = nil
     end
 end
 
@@ -1189,31 +1228,14 @@ function E:array(a)
         end
     end
     if b.phase == 'admit' then
-        local pending, verified = {}, true
+        local pending = {}
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
-            if cached.verifyRecipe and self.recoveryNodes[w.address] then
-                local n = self.io.proxy(w.address)
-                if n.hasWork() then
-                    n.setWorkAllowed(false)
-                    self:recipe(b, w, true)
-                    cached.accepted = true
-                    if w.key then
-                        w.accepted = true
-                    end
-                end
-                cached.verifyRecipe = nil
-                if self:pulse() then
-                    return
-                end
-            end
-            if cached.verifyRecipe then
-                verified = false
-            elseif not w.accepted and not cached.accepted and not cached.intake then
+            if not w.accepted and not cached.accepted and not cached.intake then
                 pending[#pending + 1] = w
             end
         end
-        if verified and #pending > 0 and not self.intakePrepared then
+        if #pending > 0 and not self.intakePrepared then
             self.intakePrepared = true
             local deadline = self.processing and self.io.time() + 0.15
             for index, w in ipairs(pending) do
@@ -1277,7 +1299,6 @@ function E:array(a)
         if self:bees(a, s, tier) then
             b.phase = 'run'
             b.started = true
-            self.save()
             self.io.proxy(a.address).setWorkAllowed(true)
             self.held[a.address] = nil
         end
@@ -1288,52 +1309,57 @@ function E:array(a)
                 return
             end
         end
-        local workers = {}
-        local views = {}
-        for index, w in ipairs(b.workers) do
-            local n = self.io.proxy(w.address)
-            local cached = self:worker(w)
-            if not cached.done and n.hasWork() then
-                local progress = b.fixed and 0 or n.getWorkProgress()
-                local tier = b.fixed or self.N.requested(meta.steps, progress)
-                if b.fixed or n.hasWork() then
-                    workers[#workers + 1] =
-                        { progress = progress, tier = tier, address = w.address }
-                    views[index] = {
-                        address = w.address,
-                        progress = progress,
-                        tier = tier,
-                        parallel = w.count,
-                        length = meta.steps[#meta.steps].finish,
-                        fast = b.fixed ~= nil,
-                    }
+        local now = self.io.time()
+        if b.fixed or not b.nextScan or now >= b.nextScan then
+            if not b.fixed then
+                b.nextScan = now + 0.25
+            end
+            local workers = {}
+            local views = {}
+            for index, w in ipairs(b.workers) do
+                local n = self.io.proxy(w.address)
+                local cached = self:worker(w)
+                if not cached.done and n.hasWork() then
+                    local progress = b.fixed and 0 or n.getWorkProgress()
+                    local tier = b.fixed or self.N.requested(meta.steps, progress)
+                    if b.fixed or n.hasWork() then
+                        workers[#workers + 1] =
+                            { progress = progress, tier = tier, address = w.address }
+                        views[index] = {
+                            address = w.address,
+                            progress = progress,
+                            tier = tier,
+                            parallel = w.count,
+                            length = meta.steps[#meta.steps].finish,
+                            fast = b.fixed ~= nil,
+                        }
+                    else
+                        cached.done = true
+                    end
                 else
                     cached.done = true
                 end
-            else
-                cached.done = true
             end
-        end
-        self.observations[a.address] = views
-        if #workers == 0 then
-            if not self:hold(a) then
+            self.observations[a.address] = views
+            if #workers == 0 then
+                if not self:hold(a) then
+                    return
+                end
+                self:filters(a, {})
+                b.phase = 'return'
+                self.resourcesAt = nil
                 return
             end
-            self:filters(a, {})
-            b.phase = 'return'
-            self.resourcesAt = nil
-            self.save()
-            return
-        end
-        local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
-        if ref then
-            b.reference = ref.progress
-            local tier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
-            if self:bees(a, s, tier) and self.held[a.address] then
-                self:filters(a, meta.unit)
-                self.io.proxy(a.address).setWorkAllowed(true)
-                self.held[a.address] = nil
+            local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
+            if ref then
+                b.reference = ref.progress
+                b.targetTier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
             end
+        end
+        if b.targetTier and self:bees(a, s, b.targetTier) and self.held[a.address] then
+            self:filters(a, meta.unit)
+            self.io.proxy(a.address).setWorkAllowed(true)
+            self.held[a.address] = nil
         end
     elseif b.phase == 'return' then
         if self.stopping or s.bee or self:beeWaiting(a, s) then
@@ -1346,7 +1372,6 @@ function E:array(a)
         s.done = s.done + b.count
         s.batch = nil
         s.request = nil
-        self.save()
     end
 end
 
@@ -1434,6 +1459,9 @@ function E:tick()
     end
     -- Every assembler must finish its old cycle before the first resource snapshot.
     if not self.recovered then
+        if self.ports and not self:resolvePorts() then
+            return
+        end
         for _, a in ipairs(self.arrays) do
             if not self:hold(a) then
                 return
@@ -1466,7 +1494,6 @@ function E:tick()
     if not self.errors[self.cfg.channels[1].id] then
         self:schedule()
     end
-    self:recoveryIntakes()
     self.intakePrepared = false
     self.processing = false
     -- Service existing work before preparing the next whole array for intake.

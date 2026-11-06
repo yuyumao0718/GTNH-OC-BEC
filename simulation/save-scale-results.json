@@ -1,122 +1,134 @@
 [
   {
-    "saveReplays": 66,
-    "saves": 160,
+    "saveReplays": 1,
+    "normalNodeCloses": 96,
+    "saves": 1,
+    "moveReplays": 48,
+    "arrays": 6,
+    "fast": false,
+    "manualResets": 0,
+    "filterWrites": 12,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 1,
+    "normalNodeCloses": 96,
+    "saves": 1,
+    "moveReplays": 24,
+    "arrays": 6,
+    "fast": true,
+    "manualResets": 0,
+    "filterWrites": 12,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 1,
+    "normalNodeCloses": 160,
+    "saves": 1,
+    "moveReplays": 80,
+    "arrays": 10,
+    "fast": false,
+    "manualResets": 0,
+    "filterWrites": 20,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 1,
+    "normalNodeCloses": 160,
+    "saves": 1,
+    "moveReplays": 40,
+    "arrays": 10,
+    "fast": true,
+    "manualResets": 0,
+    "filterWrites": 20,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 1,
+    "normalNodeCloses": 480,
+    "saves": 1,
+    "moveReplays": 240,
+    "arrays": 30,
+    "fast": false,
+    "manualResets": 0,
+    "filterWrites": 60,
+    "lua": "lua52"
+  },
+  {
+    "saveReplays": 1,
+    "normalNodeCloses": 480,
+    "saves": 1,
+    "moveReplays": 120,
+    "arrays": 30,
+    "fast": true,
+    "manualResets": 0,
+    "filterWrites": 60,
+    "lua": "lua52"
+  },
+  {
+    "arrays": 6,
+    "manualResets": 0,
     "normalNodeCloses": 96,
     "filterWrites": 12,
     "moveReplays": 48,
     "fast": false,
-    "arrays": 6,
-    "lua": "lua52"
+    "saves": 1,
+    "saveReplays": 1,
+    "lua": "lua53"
   },
   {
-    "saveReplays": 42,
-    "saves": 94,
+    "arrays": 6,
+    "manualResets": 0,
     "normalNodeCloses": 96,
     "filterWrites": 12,
     "moveReplays": 24,
     "fast": true,
-    "arrays": 6,
-    "lua": "lua52"
+    "saves": 1,
+    "saveReplays": 1,
+    "lua": "lua53"
   },
   {
-    "saveReplays": 66,
-    "saves": 264,
+    "arrays": 10,
+    "manualResets": 0,
     "normalNodeCloses": 160,
     "filterWrites": 20,
     "moveReplays": 80,
     "fast": false,
-    "arrays": 10,
-    "lua": "lua52"
+    "saves": 1,
+    "saveReplays": 1,
+    "lua": "lua53"
   },
   {
-    "saveReplays": 42,
-    "saves": 154,
+    "arrays": 10,
+    "manualResets": 0,
     "normalNodeCloses": 160,
     "filterWrites": 20,
     "moveReplays": 40,
     "fast": true,
-    "arrays": 10,
-    "lua": "lua52"
+    "saves": 1,
+    "saveReplays": 1,
+    "lua": "lua53"
   },
   {
-    "saveReplays": 66,
-    "saves": 784,
+    "arrays": 30,
+    "manualResets": 0,
     "normalNodeCloses": 480,
     "filterWrites": 60,
     "moveReplays": 240,
     "fast": false,
-    "arrays": 30,
-    "lua": "lua52"
+    "saves": 1,
+    "saveReplays": 1,
+    "lua": "lua53"
   },
   {
-    "saveReplays": 42,
-    "saves": 454,
+    "arrays": 30,
+    "manualResets": 0,
     "normalNodeCloses": 480,
     "filterWrites": 60,
     "moveReplays": 120,
     "fast": true,
-    "arrays": 30,
-    "lua": "lua52"
-  },
-  {
-    "fast": false,
-    "filterWrites": 12,
-    "normalNodeCloses": 96,
-    "arrays": 6,
-    "moveReplays": 48,
-    "saveReplays": 66,
-    "saves": 160,
-    "lua": "lua53"
-  },
-  {
-    "fast": true,
-    "filterWrites": 12,
-    "normalNodeCloses": 96,
-    "arrays": 6,
-    "moveReplays": 24,
-    "saveReplays": 42,
-    "saves": 94,
-    "lua": "lua53"
-  },
-  {
-    "fast": false,
-    "filterWrites": 20,
-    "normalNodeCloses": 160,
-    "arrays": 10,
-    "moveReplays": 80,
-    "saveReplays": 66,
-    "saves": 264,
-    "lua": "lua53"
-  },
-  {
-    "fast": true,
-    "filterWrites": 20,
-    "normalNodeCloses": 160,
-    "arrays": 10,
-    "moveReplays": 40,
-    "saveReplays": 42,
-    "saves": 154,
-    "lua": "lua53"
-  },
-  {
-    "fast": false,
-    "filterWrites": 60,
-    "normalNodeCloses": 480,
-    "arrays": 30,
-    "moveReplays": 240,
-    "saveReplays": 66,
-    "saves": 784,
-    "lua": "lua53"
-  },
-  {
-    "fast": true,
-    "filterWrites": 60,
-    "normalNodeCloses": 480,
-    "arrays": 30,
-    "moveReplays": 120,
-    "saveReplays": 42,
-    "saves": 454,
+    "saves": 1,
+    "saveReplays": 1,
     "lua": "lua53"
   }
 ]

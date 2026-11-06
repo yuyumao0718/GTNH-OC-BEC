@@ -120,9 +120,6 @@ do
         return original(side, slot)
     end
     w.finish(10000)
-    assert(reads[2] == 1, 'fastTier must read its T2 candidate')
-    for slot, count in pairs(reads) do
-        assert(slot == 2 and count == 1)
-    end
+    assert(not next(reads), 'known pool contents should not be reread at fastTier startup')
 end
-print('  PASS fastTier reads only the candidate grade and still uses actual loaded counts')
+print('  PASS fastTier uses the initial pool scan and actual loaded counts')

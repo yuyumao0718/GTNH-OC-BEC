@@ -39,11 +39,9 @@ local command = args[1] or 'help'
 if command ~= 'setup' and command ~= 'check' and command ~= 'run' and command ~= 'recover' then
     print('bec_multi.lua setup | check | run | recover')
     print('setup：打开配置；check：检查配置和设备；run：开始运行或续做。')
+    print('recover：与 run 相同，扫描机器并接管节点任务。')
     print(
-        'recover：接管没有续做记录的节点任务；必要时手动指定蜂群归还位置。'
-    )
-    print(
-        'S：完成已接订单后配置；Q：完成后退出；Ctrl+C：立即暂停并保存进度，下次运行时续做。'
+        'S：完成已接订单后配置；Q：完成后退出；Ctrl+C：暂停；下次运行时从机器现场续做。'
     )
     return
 end
@@ -57,7 +55,7 @@ local function screen()
 end
 
 local function compatible(cfg, state)
-    return Recovery.check(cfg, state, U, component.proxy, M)
+    return Recovery.check(cfg, state, U, component.proxy)
 end
 
 local function configure()
@@ -75,10 +73,11 @@ local function configure()
     local result = screen():edit(cfg, component, {
         U = U,
         clearRecipes = function()
+            Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
             local count, patterns = store.clearRecipes()
             if engine then
                 engine.s.patterns = patterns
-                engine.poolSupport = {}
+                engine.poolSupport, engine.supported = {}, {}
             end
             return count
         end,
@@ -86,8 +85,7 @@ local function configure()
             store.write('multi.setup', value)
         end,
         write = function(value)
-            local state = store.read('multi.state') or {}
-            compatible(value, state)
+            compatible(value, store.read('multi.cfg'))
             store.write('multi.cfg', value)
             if fs.exists(base .. 'multi.setup') then
                 fs.remove(base .. 'multi.setup')
@@ -109,7 +107,6 @@ local ok, err = xpcall(function()
         local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
         C.validate(cfg, component, U)
         local state = store.read('multi.state') or {}
-        compatible(cfg, state)
         engine = Core.new(cfg, state, {
             proxy = component.proxy,
             time = computer.uptime,
@@ -119,6 +116,7 @@ local ok, err = xpcall(function()
         }, modules)
         if command == 'check' then
             engine:check()
+            engine:scanBees()
             Refill.new(engine)
             print(
                 '检查通过：'
@@ -129,47 +127,10 @@ local ok, err = xpcall(function()
             )
             return
         end
-        if command == 'recover' then
-            engine:pause()
-            local held
-            repeat
-                held = true
-                for _, a in ipairs(engine.arrays) do
-                    if not engine:hold(a) then
-                        held = false
-                    end
-                end
-                if not held then
-                    local ev = pull(0.05)
-                    assert(ev ~= 'interrupted', '接管已取消，机器保持暂停')
-                end
-            until held
-            Recovery.adopt(engine, function(a, tier, candidates)
-                print(
-                    '阵列 '
-                        .. a.address
-                        .. ' 已装载 T'
-                        .. tier
-                        .. ' 蜂群，请指定原来的空元件：'
-                )
-                for _, c in ipairs(candidates) do
-                    print('箱子 ' .. c.box .. ' / 槽位 ' .. c.slot)
-                end
-                io.write('输入箱子编号和槽位，用空格分隔；直接回车取消：')
-                local line = io.read()
-                local box, slot = (line or ''):match('^%s*(%d+)%s+(%d+)%s*$')
-                if box then
-                    return { box = tonumber(box), slot = tonumber(slot), tier = tier }
-                end
-            end)
-            command = 'run'
-        end
+        command = 'run'
         engine:start()
-        state.wiring = U.copy(cfg)
-        engine.save()
         local refill = Refill.new(engine)
         local lastDraw
-        local lastSave = computer.uptime()
         local editing = false
         local stopping = false
         local interrupted = false
@@ -225,13 +186,6 @@ local ok, err = xpcall(function()
             if engine.ready and engine.recovered then
                 refill:tick()
             end
-            local now = computer.uptime()
-            if now - lastSave >= 5 then
-                if engine.dirty then
-                    engine.save()
-                end
-                lastSave = now
-            end
             if stopping and engine:drain() then
                 local pending = false
                 for _, s in pairs(state.refill.feeds) do
@@ -240,7 +194,6 @@ local ok, err = xpcall(function()
                     end
                 end
                 if not pending then
-                    engine.save()
                     break
                 end
             end

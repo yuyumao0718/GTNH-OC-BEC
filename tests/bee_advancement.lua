@@ -67,19 +67,6 @@ end
 print('  PASS bee phase input checkpoints preserve exact transfer recovery')
 
 do
-    local w = make(1, 0)
-    local a = w.cfg.arrays[1]
-    w.e:bees(a, w.state.arrays[a.address], 1)
-    local saved = U.copy(w.saved)
-    saved.arrays[a.address].bee.phase = 'io'
-    w.boot(saved)
-    w.advance()
-    assert(w.e:bees(a, w.state.arrays[a.address], 1))
-    assert(w.moves == 2 and w.arrays.a1.bees == 32)
-end
-print('  PASS saved ME-IO waiting phase resumes without repeating the outgoing move')
-
-do
     local w = make(2, 0)
     local first, second = w.cfg.arrays[1], w.cfg.arrays[2]
     for _ = 1, 4 do

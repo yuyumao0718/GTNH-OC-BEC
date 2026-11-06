@@ -115,7 +115,6 @@ do
     end
     assert(w.state.arrays[a.address].batch.phase == 'admit')
     for _ = 1, 10 do
-        w.e:recoveryIntakes()
         w.e:array(a)
     end
     for _, c in pairs(calls) do
@@ -128,7 +127,6 @@ do
         return false
     end
     for _ = 1, 10 do
-        w.e:recoveryIntakes()
         w.e:array(a)
     end
     local first = calls[a.nodes[1].address]

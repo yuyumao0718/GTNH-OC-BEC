@@ -183,7 +183,9 @@ do
     local w = make(1, 3, { nodes = 3, stageTicks = 400 })
     local b = untilPhase(w, 'run')
     w.nodes['a1:n1'].active = false
+    w.nodes['a1:n2'].progress = 1
     w.e:recover(w.cfg.arrays[1], w.state.arrays.a1)
+    b = w.state.arrays.a1.batch
     assert(#b.workers == 2 and b.workers[1].address == 'a1:n2')
     w.e:array(w.cfg.arrays[1])
     w.e.io.proxy = function()

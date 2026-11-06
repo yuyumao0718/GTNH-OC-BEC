@@ -378,7 +378,7 @@ function G:runtime(e, refill)
     local actions = {
         { 'quit', 'Q 完成后退出' },
         { 'setup', 'S 完成后配置' },
-        { 'interrupt', 'Ctrl+C 暂停并保存' },
+        { 'interrupt', 'Ctrl+C 暂停' },
     }
     local actionWidth = 0
     for _, action in ipairs(actions) do
@@ -422,7 +422,7 @@ function G:runtime(e, refill)
             .. #e.s.queue
             .. '  |  纠缠装置 '
             .. #e.cfg.generators
-            .. '  |  已完成 '
+            .. '  |  本次完成 '
             .. exact(done)
             .. ' 份',
         w - 3
@@ -620,7 +620,7 @@ function G:runtime(e, refill)
                 for tier = 1, 10 do
                     local c = s and s.lease and s.lease[tier]
                     if c then
-                        leases[#leases + 1] = 'T' .. tier .. ' 箱' .. c.box .. ' 槽' .. c.slot
+                        leases[#leases + 1] = 'T' .. tier
                     end
                 end
                 local tier = (e.provided or {})[row.address]

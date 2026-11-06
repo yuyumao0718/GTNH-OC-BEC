@@ -86,6 +86,7 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
       assert(sparse.state.arrays.a1.batch.phase=='run')
       sparse.nodes['a1:n1'].active=false
       sparse.nodes['a1:n8'].active=false
+      sparse.nodes['a1:n2'].progress=1
       sparse.e:recover(sparse.cfg.arrays[1],sparse.state.arrays.a1)
       sparse.e:array(sparse.cfg.arrays[1]); ui.tab=2; ui.nodeOnly=true
       ui:runtime(sparse.e,sparse.r)

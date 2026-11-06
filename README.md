@@ -6,4 +6,4 @@
 - [带实际界面渲染的配置示例](wiki/index.html)
 - [测试方法与覆盖范围](测试说明.md)
 
-游戏内安装器：[`install/multi_install.lua`](install/multi_install.lua)。安装器内含程序文件，保留已有配置和续做记录。
+游戏内安装器：[`install/multi_install.lua`](install/multi_install.lua)。安装器内含程序文件，保留已有配置和配方缓存，运行时从节点及公共 AE 子网续做。

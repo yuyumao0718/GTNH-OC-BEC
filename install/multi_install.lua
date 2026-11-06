@@ -48,11 +48,9 @@ local command = args[1] or 'help'
 if command ~= 'setup' and command ~= 'check' and command ~= 'run' and command ~= 'recover' then
     print('bec_multi.lua setup | check | run | recover')
     print('setup：打开配置；check：检查配置和设备；run：开始运行或续做。')
+    print('recover：与 run 相同，扫描机器并接管节点任务。')
     print(
-        'recover：接管没有续做记录的节点任务；必要时手动指定蜂群归还位置。'
-    )
-    print(
-        'S：完成已接订单后配置；Q：完成后退出；Ctrl+C：立即暂停并保存进度，下次运行时续做。'
+        'S：完成已接订单后配置；Q：完成后退出；Ctrl+C：暂停；下次运行时从机器现场续做。'
     )
     return
 end
@@ -66,7 +64,7 @@ local function screen()
 end
 
 local function compatible(cfg, state)
-    return Recovery.check(cfg, state, U, component.proxy, M)
+    return Recovery.check(cfg, state, U, component.proxy)
 end
 
 local function configure()
@@ -84,10 +82,11 @@ local function configure()
     local result = screen():edit(cfg, component, {
         U = U,
         clearRecipes = function()
+            Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
             local count, patterns = store.clearRecipes()
             if engine then
                 engine.s.patterns = patterns
-                engine.poolSupport = {}
+                engine.poolSupport, engine.supported = {}, {}
             end
             return count
         end,
@@ -95,8 +94,7 @@ local function configure()
             store.write('multi.setup', value)
         end,
         write = function(value)
-            local state = store.read('multi.state') or {}
-            compatible(value, state)
+            compatible(value, store.read('multi.cfg'))
             store.write('multi.cfg', value)
             if fs.exists(base .. 'multi.setup') then
                 fs.remove(base .. 'multi.setup')
@@ -118,7 +116,6 @@ local ok, err = xpcall(function()
         local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
         C.validate(cfg, component, U)
         local state = store.read('multi.state') or {}
-        compatible(cfg, state)
         engine = Core.new(cfg, state, {
             proxy = component.proxy,
             time = computer.uptime,
@@ -128,6 +125,7 @@ local ok, err = xpcall(function()
         }, modules)
         if command == 'check' then
             engine:check()
+            engine:scanBees()
             Refill.new(engine)
             print(
                 '检查通过：'
@@ -138,47 +136,10 @@ local ok, err = xpcall(function()
             )
             return
         end
-        if command == 'recover' then
-            engine:pause()
-            local held
-            repeat
-                held = true
-                for _, a in ipairs(engine.arrays) do
-                    if not engine:hold(a) then
-                        held = false
-                    end
-                end
-                if not held then
-                    local ev = pull(0.05)
-                    assert(ev ~= 'interrupted', '接管已取消，机器保持暂停')
-                end
-            until held
-            Recovery.adopt(engine, function(a, tier, candidates)
-                print(
-                    '阵列 '
-                        .. a.address
-                        .. ' 已装载 T'
-                        .. tier
-                        .. ' 蜂群，请指定原来的空元件：'
-                )
-                for _, c in ipairs(candidates) do
-                    print('箱子 ' .. c.box .. ' / 槽位 ' .. c.slot)
-                end
-                io.write('输入箱子编号和槽位，用空格分隔；直接回车取消：')
-                local line = io.read()
-                local box, slot = (line or ''):match('^%s*(%d+)%s+(%d+)%s*$')
-                if box then
-                    return { box = tonumber(box), slot = tonumber(slot), tier = tier }
-                end
-            end)
-            command = 'run'
-        end
+        command = 'run'
         engine:start()
-        state.wiring = U.copy(cfg)
-        engine.save()
         local refill = Refill.new(engine)
         local lastDraw
-        local lastSave = computer.uptime()
         local editing = false
         local stopping = false
         local interrupted = false
@@ -234,13 +195,6 @@ local ok, err = xpcall(function()
             if engine.ready and engine.recovered then
                 refill:tick()
             end
-            local now = computer.uptime()
-            if now - lastSave >= 5 then
-                if engine.dirty then
-                    engine.save()
-                end
-                lastSave = now
-            end
             if stopping and engine:drain() then
                 local pending = false
                 for _, s in pairs(state.refill.feeds) do
@@ -249,7 +203,6 @@ local ok, err = xpcall(function()
                     end
                 end
                 if not pending then
-                    engine.save()
                     break
                 end
             end
@@ -710,7 +663,7 @@ return C
 files[#files + 1] = {
     name = 'ma_core.lua',
     code = [=[
--- Arrays yield while hardware is pending; all durable state contains plain tables.
+-- The machines own the active work. Only learned recipes are written to disk.
 local E = {}
 E.__index = E
 local function cellKey(c)
@@ -739,7 +692,6 @@ function E.new(cfg, state, io, modules)
         observations = {},
         provided = {},
         beeChecked = {},
-        beeCounts = {},
         held = {},
         nodeCache = {},
         maxParallel = {},
@@ -754,17 +706,32 @@ function E.new(cfg, state, io, modules)
         cells = {},
         boxes = {},
     }, E)
-    for _, key in ipairs({ 'arrays', 'queue', 'patterns', 'moves', 'poolCounts' }) do
-        state[key] = state[key] or {}
+    local learned = {}
+    for key, meta in pairs(state.patterns or {}) do
+        if meta.unit and meta.pattern and next(meta.pattern.inputs) then
+            learned[key] = meta
+        end
     end
-    state.nextId = state.nextId or 1
+    for key in pairs(state) do
+        state[key] = nil
+    end
+    state.patterns, state.arrays, state.queue, state.nextId = learned, {}, {}, 1
+    self.charge, self.effective = {}, {}
     self.save = function()
+        if not self.learnedDirty then
+            return
+        end
+        local patterns = {}
+        for k, meta in pairs(state.patterns) do
+            if meta.unit and next(meta.pattern.inputs) then
+                patterns[k] = meta
+            end
+        end
         self.saveFailed = true
-        io.save(state)
-        self.saveFailed = nil
-        self.dirty = nil
+        io.save({ patterns = patterns })
+        self.saveFailed, self.learnedDirty = nil, nil
     end
-    self.log = modules.Log.new(cfg, state, io.proxy, self.save, self.U)
+    self.log = modules.Log.new(cfg, io.proxy, self.U)
     self.pools = self.U.index(cfg.beePools)
     for _, b in ipairs(cfg.bands) do
         for _, m in ipairs(self.M) do
@@ -904,7 +871,6 @@ function E:check()
         '公共原料子网 ME 控制器不支持物品变化事件，请检查 OC 版本'
     )
     self:catalogsRead()
-    local needed = 0
     for _, a in ipairs(self.arrays) do
         local d = self.io.proxy(a.diode)
         assert(d.hasWork() and d.isWorkAllowed(), '请先启动麦克斯韦门：' .. a.address)
@@ -913,29 +879,6 @@ function E:check()
                 self.log:size(id) == 12,
                 '蜂群 ME-IO 端口选择有误，请检查转运器和端口方向：' .. id
             )
-        end
-        local s = self.s.arrays[a.address]
-        local provided = self.io.proxy(a.nodes[1].address).getProvidedTier()
-        self.provided[a.address] = provided and provided.tier
-        assert(
-            not provided or s and s.lease and s.lease[provided.tier],
-            '阵列内的蜂群没有借用记录，请运行 bec_multi.lua recover 指定归还位置：'
-                .. a.address
-        )
-        for _, n in ipairs(a.nodes) do
-            assert(
-                not self.io.proxy(n.address).hasWork()
-                    or self.s.arrays[a.address] and self.s.arrays[a.address].batch,
-                '节点正在加工，但找不到续做记录，请运行 bec_multi.lua recover：'
-                    .. n.address
-            )
-            local node = self.io.proxy(n.address)
-            if node.hasWork() and s and s.batch and s.batch.started and s.batch.granted then
-                local consumed = node.getConsumedCondensate()
-                for k, v in pairs(node.getRequiredCondensate()) do
-                    needed = needed + v - (consumed[k] or 0)
-                end
-            end
         end
     end
     assert(
@@ -946,20 +889,18 @@ function E:check()
         self.U.total(self.storage.getStoredCondensate()) <= self.cfg.fieldLimit,
         '凝聚物库存超过设置的场强容量'
     )
-    assert(
-        needed <= self.cfg.fieldLimit,
-        '节点剩余凝聚物需求超过场强容量，请提高场强或完成部分任务后再降低'
-    )
     return true
 end
 
 function E:start()
+    self.wasEnabled = {}
+    for _, a in ipairs(self.arrays) do
+        self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
+    end
     self:pause()
     self:check()
+    self:scanBees()
     for _, a in ipairs(self.arrays) do
-        self.s.arrays[a.address] = self.s.arrays[a.address] or { done = 0, counts = {} }
-        local s = self.s.arrays[a.address]
-        s.counts = s.counts or {}
         for _, n in ipairs(a.nodes) do
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
@@ -971,7 +912,6 @@ function E:start()
     end
     self.fieldProgress = self.storage.getWorkProgress()
     self.ready = false
-    self.save()
 end
 
 function E:channel(c)
@@ -1018,7 +958,6 @@ function E:channel(c)
     self.s.queue[1] = { id = self.s.nextId, key = p.key, count = count }
     self.s.nextId = self.s.nextId + 1
     self.settled[c.id] = nil
-    self.save()
     self:subscribe(false)
 end
 
@@ -1105,6 +1044,12 @@ function E:resources(force)
             end
             -- Publish only a complete ledger; no new grants are issued during this scan.
             local stock = self:stockRead(force)
+            if not self.reserved then
+                assert(
+                    self.U.total(reserved) <= self.cfg.fieldLimit,
+                    '已开工节点的剩余凝聚物需求超过场强容量'
+                )
+            end
             self.stock, self.reserved = stock, reserved
             self.free = {}
             for k, v in pairs(self.stock) do
@@ -1147,7 +1092,6 @@ function E:grant(b)
     b.granted = true
     self.U.add(self.reserved, b.reserve)
     self.U.add(self.free, b.reserve, -1)
-    self.save()
     return true
 end
 
@@ -1189,61 +1133,154 @@ function E:beeAccess(a, c)
     return self.boxes[a.address][c.box]
 end
 
-function E:beeCount(a, c, value)
-    local counts = self.s.poolCounts[a.beePool] or {}
-    self.s.poolCounts[a.beePool] = counts
-    local key = cellKey(c)
-    if value then
-        counts[key] = value
-    end
-    if not counts[key] then
-        local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
-        if stack and stack.storedItemCount > 0 then
-            counts[key] = stack.storedItemCount
+-- A slot is reserved only while its cell is physically in an ME-IO port.
+function E:scanBees()
+    local pending, holes = {}, {}
+    for _, a in ipairs(self.arrays) do
+        local s = { done = 0, counts = {} }
+        self.s.arrays[a.address] = s
+        local n = self.io.proxy(a.nodes[1].address)
+        local provided = n.getProvidedTier()
+        local tier = provided and provided.tier
+        local count = tier and n.getAvailableNanites() or 0
+        self.beeChecked[a.address] = { tier = tier, count = count }
+        self.provided[a.address] = tier
+        if tier then
+            s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
+        end
+        if not self.charge[a.beePool] then
+            local charge, missing = {}, {}
+            self.charge[a.beePool], holes[a.beePool] = charge, missing
+            for _, c in ipairs(self.pools[a.beePool].cells) do
+                local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
+                if stack then
+                    charge[cellKey(c)] = stack.storedItemCount
+                else
+                    missing[#missing + 1] = c
+                end
+            end
+        end
+        for _, port in ipairs({ a.loadPort, a.unloadPort }) do
+            local input = self.log:stack(port, 1)
+            local output = self.log:stack(port, 7)
+            if input or output then
+                local loading = port == a.loadPort
+                pending[#pending + 1] = {
+                    a = a,
+                    s = s,
+                    loading = loading,
+                    tier = (loading and output or not loading and input) and tier or nil,
+                }
+            end
         end
     end
-    return counts[key] or 1
+    local function priority(task)
+        if task.tier then
+            return 1
+        end
+        return task.loading and 2 or 3
+    end
+    table.sort(pending, function(a, b)
+        return priority(a) < priority(b)
+    end)
+    self.ports = { pending = pending, holes = holes, index = 1 }
+    return self:resolvePorts()
+end
+
+function E:resolvePorts()
+    local ports = self.ports
+    for i = ports.index, #ports.pending do
+        local task = ports.pending[i]
+        local missing = ports.holes[task.a.beePool]
+        local tier = task.tier or (missing[1] and missing[1].tier)
+        if not task.tier then
+            for _, c in ipairs(missing) do
+                if c.tier ~= tier then
+                    -- A loading port will reveal the grade on its own array after the IO cycle.
+                    assert(
+                        task.loading,
+                        '蜂群元件在 ME-IO 端口中，无法辨认等级；请按等级归位后重新运行'
+                    )
+                    local n = self.io.proxy(task.a.nodes[1].address)
+                    local provided = n.getProvidedTier()
+                    if not provided then
+                        ports.index = i
+                        return false
+                    end
+                    tier = provided.tier
+                    break
+                end
+            end
+        end
+        local selected
+        for i, c in ipairs(missing) do
+            if c.tier == tier then
+                selected = table.remove(missing, i)
+                break
+            end
+        end
+        assert(
+            selected and not task.s.bee,
+            '请将蜂群 ME-IO 端口中的元件按等级归位后重新运行'
+        )
+        task.s.bee = { tier = tier, cell = selected, loading = task.loading, phase = 'back' }
+        task.s.lease = { [tier] = true }
+        self.beeChecked[task.a.address] = nil
+    end
+    for _, missing in pairs(ports.holes) do
+        assert(
+            #missing == 0,
+            '蜂群池有缺少元件的槽位，请按登记等级归位后重新运行'
+        )
+    end
+    self.ports = nil
+    return true
+end
+
+function E:beeCount(a, c)
+    local high = 0
+    for _, slot in ipairs(self.pools[a.beePool].cells) do
+        if slot.tier == c.tier then
+            high = math.max(high, self.charge[a.beePool][cellKey(slot)] or 0)
+        end
+    end
+    for _, other in ipairs(self.arrays) do
+        if other.beePool == a.beePool then
+            local s = self.s.arrays[other.address]
+            high = math.max(high, s.counts[c.tier] or 0)
+            if s.lease and s.lease[c.tier] then
+                high = math.max(high, s.rawCount or 0)
+            end
+            if s.bee and s.bee.tier == c.tier then
+                high = math.max(high, s.bee.amount or 0)
+            end
+        end
+    end
+    return high
 end
 
 function E:borrow(a, s, tier)
-    if s.lease then
-        return s.lease[tier] ~= nil
-    end
-    local requested = not s.request or s.request.tier ~= tier
-    if requested then
+    if not s.request or s.request.tier ~= tier then
         s.request = { tier = tier, id = self.s.nextId }
         self.s.nextId = self.s.nextId + 1
     end
-    local used, earlier = {}, 0
-    for _, other in ipairs(self.cfg.arrays) do
-        if other.beePool == a.beePool then
-            local state = self.s.arrays[other.address] or {}
-            for _, c in pairs(state.lease or {}) do
-                used[cellKey(c)] = true
-            end
-            if state.request and state.request.tier == tier and state.request.id < s.request.id then
-                earlier = earlier + 1
-            end
+    local earlier = 0
+    for _, other in ipairs(self.arrays) do
+        local req = self.s.arrays[other.address].request
+        if other.beePool == a.beePool and req and req.tier == tier and req.id < s.request.id then
+            earlier = earlier + 1
         end
     end
-    local free = {}
     for _, c in ipairs(self.pools[a.beePool].cells) do
-        if c.tier == tier and not used[cellKey(c)] then
-            free[#free + 1] = c
+        if c.tier == tier and (self.charge[a.beePool][cellKey(c)] or 0) > 0 then
+            if earlier == 0 then
+                s.request = nil
+                s.lease = { [tier] = true }
+                return c
+            end
+            earlier = earlier - 1
         end
     end
-    local c = free[earlier + 1]
-    if not c then
-        if requested then
-            self.save()
-        end
-        return false
-    end
-    s.lease = { [tier] = { tier = tier, box = c.box, slot = c.slot } }
-    s.request = nil
-    s.counts = {}
-    self.save()
-    return true
 end
 
 function E:beeWaiting(a, s)
@@ -1304,7 +1341,6 @@ function E:awaitFinishing(order, eligible)
             return false
         end
         order.considered = true
-        self.save()
         local samples = {}
         local deadline = self.now + 5
         for _, a in ipairs(eligible) do
@@ -1383,15 +1419,11 @@ function E:collections()
             local c = b.collection
             local elapsed = math.max(0, self.now - (self.collectAt[a.address] or self.now))
             c.elapsed = c.elapsed + elapsed
-            if elapsed > 0 then
-                self.dirty = true
-            end
             self.collectAt[a.address] = self.now
             if self.stopping or #b.workers >= #a.nodes or c.elapsed >= self.cfg.singularityWait then
                 b.phase = 'wait'
                 self.resourcesAt = nil
                 self.collectAt[a.address] = nil
-                self.save()
             end
         else
             self.collectAt[a.address] = nil
@@ -1419,7 +1451,6 @@ function E:collectOrder(order, idle)
     for _, w in ipairs(b.workers) do
         used[w.address] = true
     end
-    local previous = b.count
     local assigned = 0
     for _, n in ipairs(selected.nodes) do
         if not used[n.address] and assigned < order.count then
@@ -1431,17 +1462,12 @@ function E:collectOrder(order, idle)
     b.phase = 'admit'
     b.admitting = true
     s.batch = b
-    self.s.admission = {
-        count = assigned,
-        members = { selected.address },
-        previous = previous,
-    }
+    self.s.admission = { members = { selected.address } }
     order.count = order.count - assigned
     if order.count == 0 then
         self.s.queue = {}
     end
     self.finishWait = nil
-    self.save()
 end
 
 function E:schedule()
@@ -1510,10 +1536,9 @@ function E:schedule()
         self.s.arrays[a.address].batch = b
         members[#members + 1] = a.address
     end
-    -- Persist ownership before enabling any node; the gate remains closed until every intake is confirmed.
-    self.s.admission = { count = order.count, members = members }
+    -- The shared gate remains closed until every intake is confirmed.
+    self.s.admission = { members = members }
     self.s.queue = {}
-    self.save()
 end
 
 function E:admissionTick()
@@ -1530,9 +1555,6 @@ function E:admissionTick()
             for _, w in ipairs(b.workers) do
                 local cached = self:worker(w)
                 if not w.accepted and not cached.accepted and not cached.intake then
-                    return
-                end
-                if cached.verifyRecipe then
                     return
                 end
             end
@@ -1554,7 +1576,7 @@ function E:admissionTick()
             end
         end
     end
-    local ready = {}
+    local ready = false
     for _, id in ipairs(admission.members) do
         local b = self.s.arrays[id].batch
         for _, w in ipairs(b.workers) do
@@ -1575,43 +1597,32 @@ function E:admissionTick()
             end
         end
         if b.phase == 'wait' then
-            ready[#ready + 1] = id
+            ready = true
         end
     end
     self.s.admission = nil
     self.resourcesAt = nil
     self.save()
-    return #ready > 0 and ready or nil
+    return ready
 end
 
-function E:recipe(b, w, verify)
-    local meta = self.s.patterns[b.key]
+function E:recipe(b, w)
     local own = self.s.patterns[w.key or b.key]
-    if not own.unit or verify then
+    if not own.unit then
         local n = self.io.proxy(w.address)
         local count = n.getParallelRecipesInProgress()
-        if verify then
-            assert(
-                count == w.count and n.getWorkProgress() == 0,
-                '节点实际取料份数与续做分配不一致，或已开始加工：'
-                    .. w.address
-            )
-        end
         local unit = {}
         for name, amount in pairs(n.getRequiredCondensate()) do
             unit[name] = amount / count
         end
-        local steps = self.N.steps(n.getRecipeSteps())
-        assert(
-            not own.unit or self.U.equal(own.unit, unit) and self.U.equal(own.steps, steps),
-            '节点配方与续做记录不一致：' .. w.address
-        )
-        own.unit, own.steps = unit, steps
+        own.unit, own.steps = unit, self.N.steps(n.getRecipeSteps())
+        self.learnedDirty = true
     end
     if w.key then
+        local base = self.s.patterns[b.key]
         assert(
-            self.U.equal(meta.unit, own.unit) and self.U.equal(meta.steps, own.steps),
-            '算力奇点配方与已记录的处理样板不一致'
+            self.U.equal(base.unit, own.unit) and self.U.equal(base.steps, own.steps),
+            '算力奇点处理样板的凝聚物需求或蜂群阶段不一致'
         )
     end
 end
@@ -1656,211 +1667,192 @@ end
 
 function E:bees(a, s, want)
     local checked = self.beeChecked[a.address]
-    if not s.bee and checked and checked.tier == want then
-        if want and checked.count > 0 then
-            return true
-        elseif not want and checked.count == 0 and not s.lease and not s.request then
+    if not s.bee then
+        local current = checked and checked.tier
+        if current == want then
+            s.request = nil
             return true
         end
-    end
-    local n = self.io.proxy(a.nodes[1].address)
-    local current
-    if not s.bee and not s.request then
-        if checked then
-            current = checked.tier
-        else
-            local provided = n.getProvidedTier()
-            current = provided and provided.tier
-        end
-        self.provided[a.address] = current
-    end
-    if not s.bee and current == want then
-        local count = checked and checked.count or n.getAvailableNanites()
-        self.beeChecked[a.address] = { tier = current, count = count }
-        if not want then
-            if count ~= 0 then
+        local cell
+        if current then
+            for _, c in ipairs(self.pools[a.beePool].cells) do
+                if c.tier == current and self.charge[a.beePool][cellKey(c)] == 0 then
+                    cell = c
+                    break
+                end
+            end
+            if not cell then
                 return false
             end
-            if s.lease or s.request then
-                s.lease = nil
-                s.request = nil
-                s.counts = {}
-                s.reuse = nil
-                self.save()
-            end
-            return true
-        end
-        if count > 0 then
-            return true
-        end
-    end
-    if not s.bee then
-        if not current then
-            if s.lease and not s.lease[want] then
-                s.lease = nil
-                s.counts = {}
-                self.save()
-            end
-            if not self:borrow(a, s, want) then
+        else
+            cell = self:borrow(a, s, want)
+            if not cell then
                 self.status[a.address] = '等待 T' .. want .. ' 蜂群'
                 return false
             end
         end
-        local tier = current or want
-        assert(s.lease and s.lease[tier], '阵列内的蜂群没有借用记录')
-        self.beeChecked[a.address] = nil
-        s.bee = { tier = tier, loading = not current, phase = 'out' }
+        local amount = self.charge[a.beePool][cellKey(cell)]
+        self.charge[a.beePool][cellKey(cell)] = nil
+        s.bee = {
+            cell = cell,
+            amount = amount,
+            tier = current or want,
+            loading = not current,
+            phase = 'out',
+        }
     end
     local b = s.bee
-    local cell = s.lease[b.tier]
-    local box = self:beeAccess(a, cell)
+    local c = b.cell
+    local box = self:beeAccess(a, c).inventory
     local port = b.loading and a.loadPort or a.unloadPort
-    local slot = cell.slot
-    local owner = 'bee:' .. a.address
     self.status[a.address] = (b.loading and '装载 T' or '回收 T') .. b.tier .. ' 蜂群'
     if b.phase == 'out' then
-        if not self.log:step(owner, box.inventory, port, slot, 1, true) then
+        if not self.log:transfer(box, port, c.slot, 1) then
             return false
         end
         b.phase = 'back'
-        self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    -- Existing checkpoints can still name the return wait 'io'.
-    if b.phase == 'back' or b.phase == 'io' then
-        if not self.log:step(owner, port, box.inventory, 7, slot) then
+    if b.phase == 'back' then
+        if not self.log:transfer(port, box, 7, c.slot) then
             return false
         end
         b.phase = 'sync'
-        self.log:finish(owner)
         if self:pulse() then
             return false
         end
     end
-    if b.phase == 'sync' then
-        local count
-        if b.loading then
-            local provided = n.getProvidedTier()
-            current = provided and provided.tier
-            if current ~= b.tier then
-                return false
-            end
-            local key = a.beePool .. ':' .. cellKey(cell)
-            count = self.beeCounts[key] or n.getAvailableNanites()
-            if count == 0 then
-                return false
-            end
-            self.beeCounts[key] = count
-        else
-            count = n.getAvailableNanites()
-            current = nil
+    local n = self.io.proxy(a.nodes[1].address)
+    local current, count
+    if b.loading then
+        local provided = n.getProvidedTier()
+        if not provided or provided.tier ~= b.tier then
+            return false
         end
-        self.provided[a.address] = current
-        if b.loading or count == 0 then
-            if b.loading then
-                s.counts[b.tier] = count
-                self:beeCount(a, cell, s.counts[b.tier])
-            else
-                s.lease = nil
-                s.counts = {}
-                s.reuse = nil
-            end
-            self.beeChecked[a.address] = { tier = current, count = count }
-            s.bee = nil
-            self.save()
-            if not b.loading and want then
-                return self:bees(a, s, want)
-            end
-            return current == want
+        current = b.tier
+        local cacheKey = a.address .. ':' .. current .. ':' .. tostring(b.amount)
+        count = b.amount and self.effective[cacheKey] or n.getAvailableNanites()
+        if count == 0 then
+            return false
         end
+        self.effective[cacheKey] = count
+        s.rawCount = b.amount
+        self.charge[a.beePool][cellKey(c)] = 0
+        s.counts[current] = count
+    else
+        if n.getAvailableNanites() ~= 0 then
+            return false
+        end
+        self.charge[a.beePool][cellKey(c)] = s.rawCount
+            or self.log:stack(box, c.slot).storedItemCount
+        s.rawCount = nil
+        s.lease, s.counts, s.reuse = nil, {}, nil
+        count = 0
     end
-    return false
+    self.beeChecked[a.address] = { tier = current, count = count }
+    self.provided[a.address] = current
+    s.bee = nil
+    if not b.loading and want then
+        return self:bees(a, s, want)
+    end
+    return current == want
 end
 
+-- The 15 circuit singularities in 2.9.0-beta-3 share this recipe. Compressed
+-- circuit arrays have the same tier sequence but use different condensates.
+local singularTiers = { 10, 5, 9, 1, 4, 8, 8, 4, 4, 8, 8, 4, 2, 6, 7, 3 }
+local singularUnit = {
+    entangled_neutronium = 147456000,
+    entangled_cosmicneutronium = 147456000,
+    entangled_bedrockium = 147456000,
+    entangled_infinity = 147456000,
+}
 function E:recover(a, s)
-    local b = s.batch
-    if not b then
-        return
-    end
-    if b.phase == 'admit' then
-        self.recoveringIntake = true
-        for _, w in ipairs(b.workers) do
-            if not w.accepted then
-                self:worker(w).verifyRecipe = true
-            end
-        end
-    end
-    if b.collection and not b.started then
-        for _, w in ipairs(b.workers) do
-            if w.accepted then
-                local n = self.io.proxy(w.address)
-                assert(
-                    n.hasWork()
-                        and n.getParallelRecipesInProgress() == w.count
-                        and n.getWorkProgress() == 0,
-                    '算力奇点收集记录与节点不一致，请核对节点：' .. w.address
-                )
-            end
-        end
-    end
-    if b.phase ~= 'run' then
-        return
-    end
-    local meta = self.s.patterns[b.key]
-    local total = 0
-    local workers = {}
-    for _, node in ipairs(a.nodes) do
-        local n = self.io.proxy(node.address)
+    local workers, total, running, unit, steps, parallel =
+        {}, 0, self.wasEnabled[a.address], nil, nil, 0
+    for _, conf in ipairs(a.nodes) do
+        local n = self.io.proxy(conf.address)
         if n.hasWork() then
             local count = n.getParallelRecipesInProgress()
-            assert(count > 0, '无法续做：节点未返回有效的加工份数')
-            local unit = {}
+            local required = {}
             for k, v in pairs(n.getRequiredCondensate()) do
-                unit[k] = v / count
+                required[k] = v / count
             end
+            local recipe = self.N.steps(n.getRecipeSteps())
             assert(
-                self.U.equal(unit, meta.unit)
-                    and self.U.equal(self.N.steps(n.getRecipeSteps()), meta.steps),
-                '节点配方与续做记录不一致'
+                not unit or self.U.equal(unit, required) and self.U.equal(steps, recipe),
+                '同一阵列的节点配方阶段或凝聚物需求不同：' .. a.address
             )
+            unit, steps = required, recipe
             total = total + count
-            workers[#workers + 1] = { address = node.address, count = count }
+            parallel = math.max(parallel, count)
+            workers[#workers + 1] = { address = conf.address, count = count }
+            running = running
+                or n.getWorkProgress() > 0
+                or self.U.total(n.getConsumedCondensate() or {}) > 0
         end
     end
-    assert(total <= b.count, '节点加工份数与剩余原料份数之和超过订单份数')
-    b.workers = workers
-    b.reference = nil
-    self.save()
-end
-
-function E:recoveryIntakes()
-    if not self.recoveringIntake then
+    if total == 0 then
         return
     end
-    local pending = {}
-    for _, a in ipairs(self.arrays) do
-        local b = self.s.arrays[a.address].batch
-        if b and b.phase == 'admit' and not self.errors[a.address] then
-            for _, w in ipairs(b.workers) do
-                local cached = self:worker(w)
-                if not w.accepted and not cached.accepted and cached.verifyRecipe then
-                    pending[#pending + 1] = w.address
-                end
+    local key, matches, singular = nil, 0, false
+    for k, m in pairs(self.s.patterns) do
+        if
+            next(m.pattern.inputs)
+            and self.U.equal(unit, m.unit)
+            and self.U.equal(steps, m.steps)
+        then
+            matches, key = matches + 1, k
+            if m.pattern.singularity then
+                singular = true
             end
         end
     end
-    self.recoveryNodes = {}
-    if #pending > 0 then
-        local first = (self.recoveryCursor or 0) % #pending
-        for offset = 1, math.min(4, #pending) do
-            self.recoveryNodes[pending[(first + offset - 1) % #pending + 1]] = true
+    if not singular and #steps == #singularTiers and self.U.equal(unit, singularUnit) then
+        singular = true
+        for i, t in ipairs(singularTiers) do
+            if steps[i].tier ~= t then
+                singular = false
+                break
+            end
         end
-        self.recoveryCursor = first + math.min(4, #pending)
-    else
-        self.recoveringIntake = nil
-        self.recoveryNodes = nil
+    end
+    if matches ~= 1 or singular then
+        key = 'recovered:' .. a.address
+        self.s.patterns[key] = {
+            pattern = {
+                label = singular and '算力奇点' or '接管的节点任务',
+                inputs = {},
+            },
+            unit = unit,
+            steps = steps,
+        }
+    end
+    local b = {
+        key = key,
+        workers = workers,
+        count = total,
+        reserve = self.U.scale(unit, total),
+        phase = 'wait',
+    }
+    s.batch = b
+    if singular then
+        b.collection = { elapsed = 0 }
+        for _, w in ipairs(workers) do
+            w.accepted = true
+        end
+        if not running and #workers < #a.nodes then
+            b.phase = 'collect'
+            s.reuse = (s.bee or s.lease) and true or nil
+            self.collectAt[a.address] = self.now
+        end
+    end
+    if running then
+        b.phase, b.started, b.granted = 'run', true, true
+        b.fixed = self.N.fastTier(steps, self:beeCells(a), s.counts, parallel)
+        s.reuse = nil
     end
 end
 
@@ -1901,31 +1893,14 @@ function E:array(a)
         end
     end
     if b.phase == 'admit' then
-        local pending, verified = {}, true
+        local pending = {}
         for _, w in ipairs(b.workers) do
             local cached = self:worker(w)
-            if cached.verifyRecipe and self.recoveryNodes[w.address] then
-                local n = self.io.proxy(w.address)
-                if n.hasWork() then
-                    n.setWorkAllowed(false)
-                    self:recipe(b, w, true)
-                    cached.accepted = true
-                    if w.key then
-                        w.accepted = true
-                    end
-                end
-                cached.verifyRecipe = nil
-                if self:pulse() then
-                    return
-                end
-            end
-            if cached.verifyRecipe then
-                verified = false
-            elseif not w.accepted and not cached.accepted and not cached.intake then
+            if not w.accepted and not cached.accepted and not cached.intake then
                 pending[#pending + 1] = w
             end
         end
-        if verified and #pending > 0 and not self.intakePrepared then
+        if #pending > 0 and not self.intakePrepared then
             self.intakePrepared = true
             local deadline = self.processing and self.io.time() + 0.15
             for index, w in ipairs(pending) do
@@ -1989,7 +1964,6 @@ function E:array(a)
         if self:bees(a, s, tier) then
             b.phase = 'run'
             b.started = true
-            self.save()
             self.io.proxy(a.address).setWorkAllowed(true)
             self.held[a.address] = nil
         end
@@ -2000,52 +1974,57 @@ function E:array(a)
                 return
             end
         end
-        local workers = {}
-        local views = {}
-        for index, w in ipairs(b.workers) do
-            local n = self.io.proxy(w.address)
-            local cached = self:worker(w)
-            if not cached.done and n.hasWork() then
-                local progress = b.fixed and 0 or n.getWorkProgress()
-                local tier = b.fixed or self.N.requested(meta.steps, progress)
-                if b.fixed or n.hasWork() then
-                    workers[#workers + 1] =
-                        { progress = progress, tier = tier, address = w.address }
-                    views[index] = {
-                        address = w.address,
-                        progress = progress,
-                        tier = tier,
-                        parallel = w.count,
-                        length = meta.steps[#meta.steps].finish,
-                        fast = b.fixed ~= nil,
-                    }
+        local now = self.io.time()
+        if b.fixed or not b.nextScan or now >= b.nextScan then
+            if not b.fixed then
+                b.nextScan = now + 0.25
+            end
+            local workers = {}
+            local views = {}
+            for index, w in ipairs(b.workers) do
+                local n = self.io.proxy(w.address)
+                local cached = self:worker(w)
+                if not cached.done and n.hasWork() then
+                    local progress = b.fixed and 0 or n.getWorkProgress()
+                    local tier = b.fixed or self.N.requested(meta.steps, progress)
+                    if b.fixed or n.hasWork() then
+                        workers[#workers + 1] =
+                            { progress = progress, tier = tier, address = w.address }
+                        views[index] = {
+                            address = w.address,
+                            progress = progress,
+                            tier = tier,
+                            parallel = w.count,
+                            length = meta.steps[#meta.steps].finish,
+                            fast = b.fixed ~= nil,
+                        }
+                    else
+                        cached.done = true
+                    end
                 else
                     cached.done = true
                 end
-            else
-                cached.done = true
             end
-        end
-        self.observations[a.address] = views
-        if #workers == 0 then
-            if not self:hold(a) then
+            self.observations[a.address] = views
+            if #workers == 0 then
+                if not self:hold(a) then
+                    return
+                end
+                self:filters(a, {})
+                b.phase = 'return'
+                self.resourcesAt = nil
                 return
             end
-            self:filters(a, {})
-            b.phase = 'return'
-            self.resourcesAt = nil
-            self.save()
-            return
-        end
-        local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
-        if ref then
-            b.reference = ref.progress
-            local tier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
-            if self:bees(a, s, tier) and self.held[a.address] then
-                self:filters(a, meta.unit)
-                self.io.proxy(a.address).setWorkAllowed(true)
-                self.held[a.address] = nil
+            local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
+            if ref then
+                b.reference = ref.progress
+                b.targetTier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
             end
+        end
+        if b.targetTier and self:bees(a, s, b.targetTier) and self.held[a.address] then
+            self:filters(a, meta.unit)
+            self.io.proxy(a.address).setWorkAllowed(true)
+            self.held[a.address] = nil
         end
     elseif b.phase == 'return' then
         if self.stopping or s.bee or self:beeWaiting(a, s) then
@@ -2058,7 +2037,6 @@ function E:array(a)
         s.done = s.done + b.count
         s.batch = nil
         s.request = nil
-        self.save()
     end
 end
 
@@ -2146,6 +2124,9 @@ function E:tick()
     end
     -- Every assembler must finish its old cycle before the first resource snapshot.
     if not self.recovered then
+        if self.ports and not self:resolvePorts() then
+            return
+        end
         for _, a in ipairs(self.arrays) do
             if not self:hold(a) then
                 return
@@ -2178,7 +2159,6 @@ function E:tick()
     if not self.errors[self.cfg.channels[1].id] then
         self:schedule()
     end
-    self:recoveryIntakes()
     self.intakePrepared = false
     self.processing = false
     -- Service existing work before preparing the next whole array for intake.
@@ -4151,7 +4131,7 @@ function G:runtime(e, refill)
     local actions = {
         { 'quit', 'Q 完成后退出' },
         { 'setup', 'S 完成后配置' },
-        { 'interrupt', 'Ctrl+C 暂停并保存' },
+        { 'interrupt', 'Ctrl+C 暂停' },
     }
     local actionWidth = 0
     for _, action in ipairs(actions) do
@@ -4195,7 +4175,7 @@ function G:runtime(e, refill)
             .. #e.s.queue
             .. '  |  纠缠装置 '
             .. #e.cfg.generators
-            .. '  |  已完成 '
+            .. '  |  本次完成 '
             .. exact(done)
             .. ' 份',
         w - 3
@@ -4393,7 +4373,7 @@ function G:runtime(e, refill)
                 for tier = 1, 10 do
                     local c = s and s.lease and s.lease[tier]
                     if c then
-                        leases[#leases + 1] = 'T' .. tier .. ' 箱' .. c.box .. ' 槽' .. c.slot
+                        leases[#leases + 1] = 'T' .. tier
                     end
                 end
                 local tier = (e.provided or {})[row.address]
@@ -4817,24 +4797,12 @@ return I
 files[#files + 1] = {
     name = 'ma_logistics.lua',
     code = [=[
--- Direct cell transfers. Record physical moves before issuing them for restart recovery.
+-- Each ME-IO port belongs to one transposer.
 local L = {}
 L.__index = L
-function L.new(cfg, state, proxy, save, U)
-    state.moves = state.moves or {}
-    local recovering = {}
-    for owner in pairs(state.moves) do
-        recovering[owner] = true
-    end
-    return setmetatable({
-        state = state,
-        proxy = proxy,
-        save = save,
-        inventories = U.index(cfg.inventories),
-        recovering = recovering,
-    }, L)
+function L.new(cfg, proxy, U)
+    return setmetatable({ proxy = proxy, inventories = U.index(cfg.inventories) }, L)
 end
-
 function L:stack(id, slot)
     local e = assert(self.inventories[id], '未配置元件容器连接：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
@@ -4848,62 +4816,12 @@ function L:size(id)
     )
 end
 
-function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
-    if self.state.moves[owner] then
-        return true
-    end
-    self.state.moves[owner] = {
-        from = from,
-        to = to,
-        fromSlot = sourceSlot,
-        toSlot = targetSlot,
-        ioSink = ioSink,
-    }
-    return true
-end
-
-function L:tick(owner)
-    local m = assert(self.state.moves[owner])
-    if m.done then
-        return true
-    end
-    -- Only a restored move may have completed before its acknowledgement was saved.
-    if self.recovering[owner] then
-        local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
-        if not source and (target or m.ioSink and self:stack(m.to, 7)) then
-            m.intent = nil
-            m.done = true
-            return true
-        end
-        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
-        assert(source or not m.ioSink, '找不到正在搬运的元件：' .. owner)
-        self.recovering[owner] = nil
-    end
-    if not m.intent then
-        m.intent = true
-        self.save()
-    end
-    local from, to = self.inventories[m.from], self.inventories[m.to]
+function L:transfer(source, target, sourceSlot, targetSlot)
+    local from, to = self.inventories[source], self.inventories[target]
     local n, err = self.proxy(from.transposer)
-        .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
+        .transferItem(from.side, to.side, 1, sourceSlot, targetSlot)
     assert(n ~= nil, err or '元件搬运失败')
-    if n == 0 then
-        return false
-    end
-    m.intent = nil
-    m.done = true
-    return m.done
-end
-
-function L:finish(owner)
-    self.state.moves[owner] = nil
-    self.recovering[owner] = nil
-    self.save()
-end
-
-function L:step(owner, from, to, sourceSlot, targetSlot, ioSink)
-    self:start(owner, from, to, sourceSlot, targetSlot, ioSink)
-    return self:tick(owner)
+    return n > 0
 end
 return L
 ]=],
@@ -5056,281 +4974,71 @@ return L
 files[#files + 1] = {
     name = 'ma_recovery.lua',
     code = [=[
+-- Configuration edits consult the machines that still have work.
 local R = {}
-function R.check(cfg, state, U, proxy, M)
-    local old = state.wiring
-    if not old then
-        return
-    end
-    local before, after = {}, {}
-    for _, name in ipairs({
-        'inventories',
-        'channels',
-        'arrays',
-        'beePools',
-        'feeds',
-        'generators',
-    }) do
-        local key = (name == 'arrays' or name == 'generators') and 'address' or 'id'
-        before[name] = U.index(old[name], key)
-        after[name] = U.index(cfg[name], key)
-    end
-    local active = false
-    local function same(a, b, message)
-        assert(U.equal(a, b), '续做仍需保留' .. message)
-    end
-    local function inventory(id)
-        same(
-            before.inventories[id],
-            after.inventories[id],
-            '元件容器的转运器和方向：' .. id
+function R.idle(cfg, proxy)
+    local ch = cfg.channels and cfg.channels[1]
+    if ch and ch.buffer and ch.buffer ~= '' then
+        assert(
+            not next(proxy(ch.buffer).getItemsInNetwork()),
+            '仍有待领取的原料，请先按 Q 完成已接订单'
         )
     end
-    local function fields(a, b, keys, message)
-        assert(b, '续做仍需保留' .. message)
-        local names = {
-            buffer = '公共原料子网 ME 控制器',
-            redstone = '红石 I/O',
-            gateSide = '红石输出方向',
-            diode = '麦克斯韦门',
-            beePool = '共享蜂群池',
-            loadPort = '蜂群装载 ME-IO 端口',
-            unloadPort = '蜂群回收 ME-IO 端口',
-        }
-        for _, k in ipairs(keys) do
-            same(a[k], b[k], message .. ' / ' .. names[k])
-        end
-    end
-    if state.admission or #(state.queue or {}) > 0 then
-        active = true
-        local c = old.channels[1]
-        fields(c, after.channels[c.id], { 'buffer', 'redstone', 'gateSide' }, '公共原料子网')
-    end
-    -- OC may stop after delivery but before recording the order.
-    if proxy then
-        for id, c in pairs(before.channels) do
-            if next(proxy(c.buffer).getItemsInNetwork()) then
-                active = true
-                fields(
-                    c,
-                    after.channels[id],
-                    { 'buffer', 'redstone', 'gateSide' },
-                    '尚有原料的公共原料子网：' .. id
-                )
-            end
-        end
-    end
-    local bands = {}
-    for _, b in ipairs(cfg.bands) do
-        bands[b.material] = true
-    end
-    local function required(unit)
-        for _, m in ipairs(M or {}) do
-            if (unit or {})[m.condensate] then
+    for _, a in ipairs(cfg.arrays or {}) do
+        if a.enabled then
+            for _, node in ipairs(a.nodes) do
                 assert(
-                    bands[m.source],
-                    '未完成任务仍需该流体的预缓存配置：' .. m.label
+                    not proxy(node.address).hasWork(),
+                    '仍有节点正在加工，请先按 Q 完成已接订单'
                 )
             end
         end
     end
-    for id, s in pairs(state.arrays or {}) do
-        local a, b = before.arrays[id], after.arrays[id]
-        if s.batch or s.lease or s.bee then
-            active = true
-            assert(b and b.enabled, '续做仍需启用阵列：' .. id)
-            fields(a, b, { 'diode', 'beePool' }, '阵列连接：' .. id)
-            if s.batch then
-                local nodes = U.index(b.nodes, 'address')
-                for _, w in ipairs(s.batch.workers or {}) do
-                    assert(nodes[w.address], '续做仍需保留节点：' .. w.address)
-                end
-                required(state.patterns[s.batch.key].unit)
-            end
-            for tier, c in pairs(s.lease or {}) do
-                local pool = after.beePools[a.beePool]
-                local found = false
-                for _, v in ipairs(pool and pool.cells or {}) do
-                    if v.box == c.box and v.slot == c.slot and v.tier == tier then
-                        found = true
-                    end
-                end
-                assert(
-                    found,
-                    '蜂群尚未归还，请保留池 '
-                        .. a.beePool
-                        .. ' / 箱 '
-                        .. c.box
-                        .. ' / 槽 '
-                        .. c.slot
-                )
-                local ab, bb = U.index(a.beeBoxes, 'box')[c.box], U.index(b.beeBoxes, 'box')[c.box]
-                same(ab, bb, '已借蜂群的箱子连接：' .. id .. ' / ' .. c.box)
-                inventory(ab.inventory)
-                fields(a, b, { 'loadPort', 'unloadPort' }, '蜂群 ME-IO 端口')
-                inventory(a.loadPort)
-                inventory(a.unloadPort)
-            end
-        end
+end
+function R.check(cfg, old, U, proxy)
+    if not old then
+        return true
     end
-    for _, move in pairs(state.moves or {}) do
-        active = true
-        inventory(move.from)
-        inventory(move.to)
+    local oldChannel = old.channels and old.channels[1]
+    local channel = cfg.channels and cfg.channels[1]
+    if
+        oldChannel
+        and channel
+        and (
+            oldChannel.buffer ~= channel.buffer
+            or oldChannel.redstone ~= channel.redstone
+            or oldChannel.gateSide ~= channel.gateSide
+        )
+    then
+        local reader = proxy(oldChannel.buffer)
+        assert(
+            not reader or not next(reader.getItemsInNetwork()),
+            '公共子网还有原料，请先完成下单再更换接单设备'
+        )
     end
-    local refill = state.refill or {}
-    for id, s in pairs(refill.feeds or {}) do
-        if s.loading or next(s.pending or {}) then
-            active = true
-            local a, b = before.feeds[id], after.feeds[id]
-            assert(
-                b,
-                '纠缠流体预缓存尚未完成，请保留对应的预缓存设备：' .. id
-            )
-            if s.loading then
-                same(a.io, b.io, '主网流体转运 ME-IO 端口：' .. id)
-                inventory(a.io)
-            end
-            for i, c in ipairs(a.cells) do
-                if (s.pending or {})[i] or s.loading and s.loading.index == i then
-                    same(
-                        c,
-                        b.cells[i],
-                        '预缓存仍需使用的流体元件：' .. id .. ' / ' .. i
+    local arrays = U.index(cfg.arrays, 'address')
+    for _, a in ipairs(old.arrays or {}) do
+        local nextArray = arrays[a.address]
+        if a.enabled and (not U.equal(a, nextArray) or old.storage ~= cfg.storage) then
+            local bound = nextArray and nextArray.enabled and U.index(nextArray.nodes, 'address')
+                or {}
+            for _, n in ipairs(a.nodes) do
+                local same = bound[n.address]
+                    and old.storage == cfg.storage
+                    and nextArray.diode == a.diode
+                    and nextArray.beePool == a.beePool
+                    and nextArray.loadPort == a.loadPort
+                    and nextArray.unloadPort == a.unloadPort
+                if not same and proxy(n.address) then
+                    assert(
+                        not proxy(n.address).hasWork(),
+                        '请保留正在加工的传送节点：' .. n.address
                     )
-                    inventory(c.inventory)
-                end
-            end
-            for address, g in pairs(before.generators) do
-                if g.feed == id then
-                    same(g, after.generators[address], '纠缠装置归属：' .. address)
                 end
             end
         end
-    end
-    for id, s in pairs(refill.generators or {}) do
-        if s.busy then
-            active = true
-            same(
-                before.generators[id],
-                after.generators[id],
-                '仍在加工的纠缠装置：' .. id
-            )
-        end
-    end
-    if active then
-        same(old.storage, cfg.storage, '共享约束场')
     end
     return true
-end
-
-function R.adopt(e, choose)
-    e:catalogsRead()
-    local arrays, patterns = e.U.copy(e.s.arrays), e.U.copy(e.s.patterns)
-    local used = {}
-    for _, a in ipairs(e.cfg.arrays) do
-        for _, c in pairs((arrays[a.address] or {}).lease or {}) do
-            used[a.beePool .. ':' .. c.box .. ':' .. c.slot] = true
-        end
-    end
-    for _, a in ipairs(e.arrays) do
-        local s = arrays[a.address] or { done = 0, counts = {} }
-        arrays[a.address] = s
-        if not s.batch then
-            local workers, unit, steps = {}, nil, nil
-            local count = 0
-            for _, node in ipairs(a.nodes) do
-                local n = e.io.proxy(node.address)
-                if n.hasWork() then
-                    local parallel = n.getParallelRecipesInProgress()
-                    assert(parallel > 0, '接管节点未返回加工份数：' .. node.address)
-                    local required = n.getRequiredCondensate()
-                    local per = {}
-                    for k, v in pairs(required) do
-                        per[k] = v / parallel
-                    end
-                    local recipe = e.N.steps(n.getRecipeSteps())
-                    assert(
-                        not unit or e.U.equal(unit, per) and e.U.equal(steps, recipe),
-                        '同一阵列的现有节点配方不同，暂不能合并接管：'
-                            .. a.address
-                    )
-                    unit, steps = per, recipe
-                    count = count + parallel
-                    workers[#workers + 1] = { address = node.address, count = parallel }
-                end
-            end
-            -- With no move record, an occupied port has no recoverable return address.
-            if not s.bee and not e.s.moves['bee:' .. a.address] then
-                for _, id in ipairs({ a.loadPort, a.unloadPort }) do
-                    for slot = 1, e.log:size(id) do
-                        assert(
-                            not e.log:stack(id, slot),
-                            '接管前请确认并归还没有搬运记录的元件：'
-                                .. id
-                                .. ' / 槽 '
-                                .. slot
-                        )
-                    end
-                end
-            end
-            if count > 0 then
-                local key = 'recovered:' .. a.address
-                patterns[key] = {
-                    pattern = { label = '接管的节点任务', inputs = {} },
-                    unit = unit,
-                    steps = steps,
-                }
-                s.batch = {
-                    key = key,
-                    count = count,
-                    workers = workers,
-                    phase = 'run',
-                    started = true,
-                    granted = true,
-                }
-            end
-        end
-        local node = e.io.proxy(a.nodes[1].address)
-        local provided = node.getProvidedTier()
-        if provided and not (s.lease and s.lease[provided.tier]) then
-            assert(
-                not s.bee and not s.lease,
-                '蜂群装卸记录与现场不一致，请先核对：' .. a.address
-            )
-            local candidates = {}
-            for _, c in ipairs(e.pools[a.beePool].cells) do
-                if
-                    c.tier == provided.tier
-                    and not used[a.beePool .. ':' .. c.box .. ':' .. c.slot]
-                then
-                    local stack = e.log:stack(e:beeAccess(a, c).inventory, c.slot)
-                    if stack and stack.storedItemCount == 0 then
-                        candidates[#candidates + 1] = c
-                    end
-                end
-            end
-            assert(
-                #candidates > 0,
-                '找不到可归还 T' .. provided.tier .. ' 蜂群的空元件：' .. a.address
-            )
-            local selected = choose(a, provided.tier, candidates)
-            local valid
-            for _, c in ipairs(candidates) do
-                if selected and selected.box == c.box and selected.slot == c.slot then
-                    valid = c
-                end
-            end
-            assert(valid, '未确认蜂群归还位置，接管已取消：' .. a.address)
-            s.lease = { [provided.tier] = e.U.copy(valid) }
-            s.request = nil
-            s.counts = { [provided.tier] = node.getAvailableNanites() }
-            used[a.beePool .. ':' .. selected.box .. ':' .. selected.slot] = true
-        end
-    end
-    -- Unconsumed common-network materials are admitted separately; active arrays may have different recipes.
-    e.s.arrays, e.s.patterns = arrays, patterns
-    e.save()
 end
 return R
 ]=],
@@ -5352,8 +5060,9 @@ function R.new(engine)
         retry = {},
     }, R)
     local e = engine
-    e.s.refill = e.s.refill or { feeds = {}, generators = {}, active = {} }
-    self.s = e.s.refill
+    self.s = { feeds = {}, generators = {}, active = {} }
+    e.s.refill = self.s
+    self.draining = true
     for _, m in ipairs(e.M) do
         self.materials[m.source] = m
     end
@@ -5362,15 +5071,20 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
-        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {} }
-        local s = self.s.feeds[f.id]
-        s.initialized, s.retry = nil, nil
+        local state = { pending = {} }
+        self.s.feeds[f.id] = state
         self.retry[f.id] = {}
-        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
+        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口应有 12 个槽')
         for i, c in ipairs(f.cells) do
-            local loading = self.s.feeds[f.id].loading
-            if not loading or loading.index ~= i then
-                self:cell(c)
+            local stack = e.log:stack(c.inventory, c.slot)
+            if stack then
+                self:cell(c, stack)
+            else
+                assert(
+                    not state.loading and (e.log:stack(f.io, 1) or e.log:stack(f.io, 7)),
+                    '请将预缓存流体元件放回登记的驱动器槽位'
+                )
+                state.loading = { index = i, phase = 'io' }
             end
         end
     end
@@ -5416,12 +5130,9 @@ function R:generators(feed)
             if s.busy and (not busy or progress < s.progress) then
                 s.epoch = s.epoch + 1
             end
-            if s.busy ~= busy or s.progress ~= progress then
-                e.dirty = true
-            end
             s.busy, s.progress = busy, progress
             self.enabled = self.enabled or {}
-            if not feed and not self.enabled[g.address] then
+            if not self.enabled[g.address] then
                 p.setWorkAllowed(true)
                 self.enabled[g.address] = true
             end
@@ -5437,26 +5148,13 @@ function R:observe(f)
         if not s.loading or s.loading.index ~= i then
             local m = self.materials[c.material]
             local pending = s.pending[i]
-            local amount, capacity
+            local amount
             if not self.initialized[f.id] or pending and not pending.finish then
-                amount, capacity = self:cell(c)
+                amount = self:cell(c)
             end
             -- A machine can start between the earlier machine sample and this cell read.
-            if not self.initialized[f.id] or pending and not pending.finish and amount < m.unit then
+            if pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
-            end
-            if not self.initialized[f.id] and not pending then
-                local busy = false
-                for _, g in ipairs(e.cfg.generators) do
-                    if g.feed == f.id and self.s.generators[g.address].busy then
-                        busy = true
-                    end
-                end
-                if amount >= m.unit or busy then
-                    pending = { amount = busy and capacity or amount }
-                    s.pending[i] = pending
-                    e.dirty = true
-                end
             end
             if pending then
                 if pending.finish then
@@ -5470,11 +5168,9 @@ function R:observe(f)
                     if done then
                         s.pending[i] = nil
                         released = true
-                        e.dirty = true
                     end
                 elseif amount < m.unit then
                     pending.finish = {}
-                    e.dirty = true
                     for _, g in ipairs(e.cfg.generators) do
                         if g.feed == f.id then
                             local gs = self.s.generators[g.address]
@@ -5487,7 +5183,6 @@ function R:observe(f)
             end
             if not s.pending[i] and amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
-                e.dirty = true
             end
         end
     end
@@ -5503,11 +5198,9 @@ function R:receive(f)
         return
     end
     local c = f.cells[task.index]
-    local owner = 'refill:' .. f.id
     if task.phase == 'out' then
-        if e.log:step(owner, c.inventory, f.io, c.slot, 1, true) then
+        if e.log:transfer(c.inventory, f.io, c.slot, 1) then
             task.phase = 'io'
-            e.log:finish(owner)
         end
     elseif task.phase == 'io' then
         local wait = self.returns[f.id]
@@ -5523,19 +5216,17 @@ function R:receive(f)
             self.returns[f.id] = nil
             task.amount = self:cell(c, stack)
             task.phase = 'back'
-            e.save()
         elseif e.now - wait.since >= 30 then
             wait.nextAt = e.now + 1
         end
     elseif task.phase == 'back' then
-        if e.log:step(owner, f.io, c.inventory, 7, c.slot) then
+        if e.log:transfer(f.io, c.inventory, 7, c.slot) then
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
                 self.retry[f.id][task.index] = e.now + 5
             end
             s.loading = nil
-            e.log:finish(owner)
         end
     end
 end
@@ -5556,11 +5247,34 @@ end
 
 function R:scan()
     local e = self.e
-    self:generators()
+    if not self.draining then
+        self:generators()
+    end
     local released = false
     for _, f in ipairs(e.cfg.feeds) do
         released = self:observe(f) or released
         self:receive(f)
+    end
+    if self.draining then
+        -- Read machines after their input cells: a cell may just have emptied into a new cycle.
+        for _, f in ipairs(e.cfg.feeds) do
+            self:generators(f.id)
+        end
+        local old = false
+        for _, g in pairs(self.s.generators) do
+            old = old or g.busy
+        end
+        for _, f in pairs(self.s.feeds) do
+            old = old or f.loading or next(f.pending)
+        end
+        if old then
+            for _, f in ipairs(e.cfg.feeds) do
+                self.detail[f.id] = '等待已有纠缠加工完成'
+            end
+            return
+        end
+        self.draining = false
+        released = true
     end
     -- Accepted orders may still need condensate while a normal shutdown drains them.
     if e.stopping and #e.s.queue == 0 then
@@ -5585,7 +5299,7 @@ function R:scan()
         end
         if s.loading then
             local key = self.materials[f.cells[s.loading.index].material].condensate
-            pending[key] = (pending[key] or 0) + s.loading.capacity
+            pending[key] = (pending[key] or 0) + (s.loading.capacity or 0)
         end
     end
     -- Potential output is retained until every generator consuming that cell has finished.
@@ -5593,15 +5307,11 @@ function R:scan()
     for _, b in ipairs(e.cfg.bands) do
         local m = self.materials[b.material]
         local free = (e.stock[m.condensate] or 0) - (e.reserved[m.condensate] or 0)
-        local wasActive = self.s.active[b.material]
         if free <= b.low or free < (e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = true
         end
         if free >= math.max(b.high, e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = false
-        end
-        if wasActive ~= self.s.active[b.material] then
-            e.dirty = true
         end
     end
     for _, f in ipairs(e.cfg.feeds) do
@@ -5639,7 +5349,6 @@ function R:scan()
                         pending[m.condensate] = (pending[m.condensate] or 0) + cap
                         capacity = capacity + cap
                         self.detail[f.id] = '搬运流体元件'
-                        e.save()
                         break
                     else
                         self.detail[f.id] = '当前元件完全存入有超出场强上限风险'
@@ -5735,27 +5444,16 @@ function S.new(base, fs, serialization, yield)
     end
     function self.clearRecipes()
         local state = self.read('multi.state') or {}
-        assert(
-            not state.admission and #(state.queue or {}) == 0,
-            '仍有待完成订单，请先运行程序并按 Q 完成后退出'
-        )
-        for _, a in pairs(state.arrays or {}) do
-            assert(
-                not a.batch and not a.lease and not a.bee,
-                '仍有加工或蜂群任务，请先运行程序并按 Q 完成后退出'
-            )
-        end
         local count = 0
         for _, p in pairs(state.patterns or {}) do
             if p.unit or p.steps then
-                p.unit, p.steps = nil, nil
                 count = count + 1
             end
         end
         if count > 0 then
-            self.write('multi.state', state)
+            self.write('multi.state', { patterns = {} })
         end
-        return count, state.patterns or {}
+        return count, {}
     end
     return self
 end

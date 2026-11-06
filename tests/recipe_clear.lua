@@ -35,24 +35,24 @@ store.write = function(name, value)
 end
 disk, writes = U.copy(original), 0
 local count = store.clearRecipes()
-local expected = U.copy(original)
-expected.patterns.a.unit, expected.patterns.a.steps = nil, nil
+local expected = { patterns = {} }
 assert(count == 1 and writes == 1 and U.equal(disk, expected))
 assert(store.clearRecipes() == 0 and writes == 1)
 disk = nil
 assert(store.clearRecipes() == 0 and writes == 1)
-for _, field in ipairs({ 'admission', 'queue', 'batch', 'bee', 'lease' }) do
-    disk, writes = U.copy(original), 0
-    if field == 'admission' then
-        disk.admission = {}
-    elseif field == 'queue' then
-        disk.queue = { {} }
-    else
-        disk.arrays.a[field] = {}
-    end
-    local before = U.copy(disk)
-    assert(not pcall(store.clearRecipes) and writes == 0 and U.equal(before, disk))
+local recovery = dofile(ROOT .. 'ma_recovery.lua')
+local busy = true
+local proxy = function()
+    return {
+        hasWork = function()
+            return busy
+        end,
+    }
 end
+local live = { arrays = { { enabled = true, nodes = { { address = 'n1' } } } } }
+assert(not pcall(recovery.idle, live, proxy))
+busy = false
+recovery.idle(live, proxy)
 disk, writes, failWrite = U.copy(original), 0, true
 assert(not pcall(store.clearRecipes) and writes == 0 and U.equal(disk, original))
 failWrite = false
@@ -74,7 +74,10 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     disk, writes = U.copy(original), 0
     local editor = F.new(ui, ex.cfg, ex.component, {
         U = U,
-        clearRecipes = store.clearRecipes,
+        clearRecipes = function()
+            recovery.idle(live, proxy)
+            return store.clearRecipes()
+        end,
         draft = function()
             drafts = drafts + 1
         end,
@@ -114,10 +117,11 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     assert(not editor.popup and writes == 1 and drafts == 0 and U.equal(disk, expected))
     assert(editor.message:find('已保存', 1, true))
     disk, writes = U.copy(original), 0
-    disk.arrays.a.batch = {}
+    busy = true
     click('clear-recipes')
     click('pick:2')
-    assert(writes == 0 and editor.message:find('仍有加工', 1, true))
+    assert(writes == 0 and editor.message:find('正在加工', 1, true))
+    busy = false
     click('clear-recipes')
     editor:event('key_down', 'keyboard', 113, 16)
     assert(editor.done and writes == 0)
@@ -149,7 +153,7 @@ do
         edit = function(_, _, _, callbacks)
             assert(callbacks.clearRecipes() == 1)
             edited = true
-            assert(not e.s.patterns.a.unit and not next(e.poolSupport))
+            assert(not next(e.s.patterns) and not next(e.poolSupport))
             return false
         end,
     }
@@ -210,7 +214,7 @@ do
             }
         end
         if name == 'ma_recovery.lua' then
-            return { check = function() end }
+            return { check = function() end, idle = function() end }
         end
         if name == 'ma_config.lua' then
             local config = oldDofile(path)
@@ -265,8 +269,7 @@ do
     end)
     require, dofile, io.stderr = oldRequire, oldDofile, oldStderr
     assert(ok, err)
-    assert(edited and configurationChecks == 2 and not files['multi.state'].patterns.a.unit)
-    assert(not files['multi.state'].patterns.a.steps and files['multi.state'].nextId == 9)
+    assert(edited and configurationChecks == 2 and not next(files['multi.state'].patterns))
 end
 print(
     '  PASS clearing from S updates the paused engine so final exit cannot restore stale recipe records'

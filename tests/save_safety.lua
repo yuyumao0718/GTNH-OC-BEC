@@ -134,12 +134,13 @@ do
     end
     local saves = w.saves
     w.e:pause()
-    assert(stopped == 95 and w.saves == saves + 1)
+    assert(stopped == 95 and w.saves == saves)
     local attempts = 0
     w.e.io.save = function()
         attempts = attempts + 1
         error('original disk error')
     end
+    w.e.learnedDirty = true
     assert(not pcall(w.e.save))
     w.e:pause()
     assert(attempts == 1, 'cleanup retried a failed save')
@@ -154,6 +155,7 @@ for _, where in ipairs({ 'array', 'channel' }) do
         error('disk failed in ' .. where)
     end
     w.e[where] = function(e)
+        e.learnedDirty = true
         e.save()
     end
     local ok, err = pcall(w.e.tick, w.e)
@@ -235,7 +237,7 @@ for _, count in ipairs({ 6, 10, 30 }) do
     end
     local load, lm = transfer(1)
     local unload, um = transfer(nil)
-    assert(load == 6 and unload == 5 and lm == 2 and um == 2)
+    assert(load == 0 and unload == 0 and lm == 2 and um == 2)
     print(
         '  PASS '
             .. count
@@ -247,7 +249,7 @@ for _, count in ipairs({ 6, 10, 30 }) do
     )
 end
 
--- The collection clock remains periodically durable when there are no other actions.
+-- Waiting is a runtime decision. Holding a collection causes no writes.
 do
     local world = assert(loadfile(ROOT .. 'tests/singularities.lua'))('fixture')
     local w = world({ { kind = 1 } }, { arrays = 6, timeout = 300 })
@@ -255,16 +257,11 @@ do
         local b = w.state.arrays.a1.batch
         return b and b.phase == 'collect'
     end)
-    w.e.save()
+    local before = w.saves
     for _ = 1, 100 do
         w.tick()
     end
-    assert(w.e.dirty)
     w.e.save()
-    local elapsed = w.saved.arrays.a1.batch.collection.elapsed
-    assert(elapsed >= 4.9)
-    w.time = 0
-    w.boot(U.copy(w.saved))
-    assert(w.state.arrays.a1.batch.collection.elapsed == elapsed)
+    assert(before == w.saves and w.saved and not w.saved.arrays)
 end
-print('  PASS periodic dirty tracking retains singularity collection time across uptime reset')
+print('  PASS singularity wait has no periodic saves')

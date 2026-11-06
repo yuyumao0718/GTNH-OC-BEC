@@ -152,6 +152,8 @@ do
     assert(w.e:poolSupports(w.cfg.arrays[1], unknown))
     unknown.steps = { { tier = 3 } }
     assert(not w.e:poolSupports(w.cfg.arrays[1], unknown))
+    w.cfg.beePools[1].cells = { { tier = 1, box = 1, slot = 1 } }
+    w.cfg.beePools[2].cells = { { tier = 1, box = 1, slot = 1 } }
     w.boot(U.copy(w.saved))
     assert(not next(w.e.poolSupport))
 end

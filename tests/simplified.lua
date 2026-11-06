@@ -246,6 +246,7 @@ test('prediction uses real ordinary observations including gaps left by complete
             w.arrays[id].tier = 2
             w.arrays[id].bees = 32
             w.arrays[id].enabled = true
+            e.beeChecked[id] = { tier = 2, count = 32 }
             e.held[id] = nil
             if completed then
                 w.nodes[id .. ':n1'].active = false
@@ -265,22 +266,20 @@ local function leftoverBees()
     w.arrays.a1.tier = 1
     w.arrays.a1.bees = 32
     w.inventories['a1:beeBox'].slots[1].storedItemCount = 0
-    w.state.arrays = {}
-    Recovery.adopt(w.e, function(_, _, candidates)
-        return candidates[1]
-    end)
+    w.boot()
     assert(w.state.arrays.a1.lease and not w.state.arrays.a1.batch)
-    w.boot(U.copy(w.saved))
     return w
 end
 
 test('takeover returns leftover bees before accepting the next order', function()
     local w = leftoverBees()
+    w.e:requestStop()
     for _ = 1, 100 do
         w.tick()
     end
     assert(not w.state.arrays.a1.lease and w.arrays.a1.bees == 0)
     assert(w.inventories['a1:beeBox'].slots[1].storedItemCount == 32)
+    w.boot()
     w.inventories.receiver.slots[1].contents = 1
     w.inventories.receiver.slots[1].storedItemCount = 1
     for _ = 1, 200 do
@@ -293,6 +292,7 @@ test('leftover bee recovery resumes at every save and physical transfer', functi
     local baseline = leftoverBees()
     local initial = baseline.saves
     local function finish(w)
+        w.e:requestStop()
         for _ = 1, 100 do
             w.tick()
         end
@@ -457,45 +457,25 @@ test(
                 w.admitted == 8
                 and w.arrays.a1.bees > 0
                 and w.state.arrays.a1.batch.phase == 'run'
-                and not next(w.state.moves)
+                and not w.state.arrays.a1.bee
             then
                 break
             end
         end
         w.e:pause()
-        local chosen = 0
-        w.state.arrays = {}
-        w.state.patterns = {}
-        w.state.admission = nil
-        Recovery.adopt(w.e, function(_, _, candidates)
-            chosen = chosen + 1
-            return candidates[1]
-        end)
-        assert(chosen > 0 and w.state.arrays.a1.batch.started and w.state.arrays.a1.batch.granted)
-        w.boot(U.copy(w.saved))
+        w.boot()
         w.finish()
     end
 )
-test('resume permits unused changes but protects nodes and a pending common network', function()
+test('configuration may change names but must retain active nodes', function()
     local w = make(2, 8)
-    for _ = 1, 100 do
-        w.tick()
-        if w.state.admission then
-            break
-        end
-    end
-    w.state.wiring = U.copy(w.cfg)
+    w.nodes['a1:n1'].active = true
     local changed = U.copy(w.cfg)
     changed.fieldLimit = changed.fieldLimit * 2
-    assert(Recovery.check(changed, w.state, U, nil, module('ma_materials')))
-    changed.channels[1].buffer = 'other'
-    throws(function()
-        Recovery.check(changed, w.state, U, nil, module('ma_materials'))
-    end)
-    changed = U.copy(w.cfg)
+    assert(Recovery.check(changed, w.cfg, U, w.e.io.proxy))
     changed.arrays[1].nodes = {}
     throws(function()
-        Recovery.check(changed, w.state, U, nil, module('ma_materials'))
+        Recovery.check(changed, w.cfg, U, w.e.io.proxy)
     end)
 end)
 test(
@@ -625,7 +605,7 @@ test('active recipes survive takeover even when arrays have different recipe ste
             and b.batch
             and a.batch.phase == 'run'
             and b.batch.phase == 'run'
-            and not next(w.state.moves)
+            and not w.state.arrays.a1.bee
         then
             break
         end
@@ -642,14 +622,15 @@ test('active recipes survive takeover even when arrays have different recipe ste
     w.state.arrays = {}
     w.state.patterns = {}
     w.state.admission = nil
-    Recovery.adopt(w.e, function(_, _, candidates)
-        return candidates[1]
-    end)
+    w.boot()
+    for _ = 1, 10 do
+        w.tick()
+        if w.e.recovered then
+            break
+        end
+    end
     local a, b = w.state.arrays.a1.batch, w.state.arrays.a2.batch
-    assert(
-        a.key ~= b.key and not U.equal(w.state.patterns[a.key].steps, w.state.patterns[b.key].steps)
-    )
-    w.boot(U.copy(w.saved))
+    assert(a and b and not U.equal(w.state.patterns[a.key].steps, w.state.patterns[b.key].steps))
     w.finish(5000)
 end)
 test(
@@ -899,11 +880,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                             end,
                             write = function(name, value)
                                 assert(name == 'multi.state')
-                                if
-                                    engine
-                                    and value.arrays.a1.batch
-                                    and value.arrays.a1.batch.phase == 'run'
-                                then
+                                if engine and next(value.patterns) then
                                     if action == 'save-error' then
                                         sent = true
                                         saveErrors = saveErrors + 1
@@ -954,7 +931,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                             edit = function()
                                 assert(
                                     action == 'mid-setup'
-                                        and not state.arrays.a1.batch
+                                        and not engine.s.arrays.a1.batch
                                         and w.arrays.a1.bees == 0
                                 )
                                 edits = edits + 1
@@ -987,12 +964,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
             w.boot(state)
             w.finish()
         elseif action == 'pending' then
-            assert(state.wiring and next(state.refill.feeds.raw.pending))
-            local cfg = U.copy(w.cfg)
-            cfg.feeds[1].cells[1].slot = 2
-            throws(function()
-                Recovery.check(cfg, state, U, component.proxy, module('ma_materials'))
-            end)
+            assert(not state or not state.refill)
         elseif
             action == 'quit'
             or action == 'burst'
@@ -1001,7 +973,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
             or action == 'redraw'
             or action == 'slow-redraw'
         then
-            assert(w.produced == 9 and not state.arrays.a1.batch and w.arrays.a1.bees == 0)
+            assert(w.produced == 9 and not engine.s.arrays.a1.batch and w.arrays.a1.bees == 0)
             if action == 'mid-setup' then
                 assert(edits == 1)
             end
@@ -1025,12 +997,7 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                     'Ctrl+C must stop at the boundary of the current array'
                 )
             end
-            assert(
-                w.produced < 9
-                    and state.arrays.a1.batch
-                    and state.wiring
-                    and not w.arrays.a1.enabled
-            )
+            assert(w.produced < 9 and engine.s.arrays.a1.batch and not w.arrays.a1.enabled)
             w.boot(state)
             w.finish()
         end

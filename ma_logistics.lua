@@ -1,21 +1,9 @@
--- Direct cell transfers. Record physical moves before issuing them for restart recovery.
+-- Each ME-IO port belongs to one transposer.
 local L = {}
 L.__index = L
-function L.new(cfg, state, proxy, save, U)
-    state.moves = state.moves or {}
-    local recovering = {}
-    for owner in pairs(state.moves) do
-        recovering[owner] = true
-    end
-    return setmetatable({
-        state = state,
-        proxy = proxy,
-        save = save,
-        inventories = U.index(cfg.inventories),
-        recovering = recovering,
-    }, L)
+function L.new(cfg, proxy, U)
+    return setmetatable({ proxy = proxy, inventories = U.index(cfg.inventories) }, L)
 end
-
 function L:stack(id, slot)
     local e = assert(self.inventories[id], '未配置元件容器连接：' .. tostring(id))
     return self.proxy(e.transposer).getStackInSlot(e.side, slot)
@@ -29,61 +17,11 @@ function L:size(id)
     )
 end
 
-function L:start(owner, from, to, sourceSlot, targetSlot, ioSink)
-    if self.state.moves[owner] then
-        return true
-    end
-    self.state.moves[owner] = {
-        from = from,
-        to = to,
-        fromSlot = sourceSlot,
-        toSlot = targetSlot,
-        ioSink = ioSink,
-    }
-    return true
-end
-
-function L:tick(owner)
-    local m = assert(self.state.moves[owner])
-    if m.done then
-        return true
-    end
-    -- Only a restored move may have completed before its acknowledgement was saved.
-    if self.recovering[owner] then
-        local source, target = self:stack(m.from, m.fromSlot), self:stack(m.to, m.toSlot)
-        if not source and (target or m.ioSink and self:stack(m.to, 7)) then
-            m.intent = nil
-            m.done = true
-            return true
-        end
-        assert(not target, '目标槽位已被占用：' .. m.to .. ':' .. m.toSlot)
-        assert(source or not m.ioSink, '找不到正在搬运的元件：' .. owner)
-        self.recovering[owner] = nil
-    end
-    if not m.intent then
-        m.intent = true
-        self.save()
-    end
-    local from, to = self.inventories[m.from], self.inventories[m.to]
+function L:transfer(source, target, sourceSlot, targetSlot)
+    local from, to = self.inventories[source], self.inventories[target]
     local n, err = self.proxy(from.transposer)
-        .transferItem(from.side, to.side, 1, m.fromSlot, m.toSlot)
+        .transferItem(from.side, to.side, 1, sourceSlot, targetSlot)
     assert(n ~= nil, err or '元件搬运失败')
-    if n == 0 then
-        return false
-    end
-    m.intent = nil
-    m.done = true
-    return m.done
-end
-
-function L:finish(owner)
-    self.state.moves[owner] = nil
-    self.recovering[owner] = nil
-    self.save()
-end
-
-function L:step(owner, from, to, sourceSlot, targetSlot, ioSink)
-    self:start(owner, from, to, sourceSlot, targetSlot, ioSink)
-    return self:tick(owner)
+    return n > 0
 end
 return L

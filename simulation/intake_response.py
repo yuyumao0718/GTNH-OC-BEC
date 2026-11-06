@@ -12,7 +12,7 @@ import unicodedata
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / '.testdeps'))
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--baseline', default='4a0e07a')
+parser.add_argument('--baseline', default='04842b2')
 parser.add_argument('--installer', type=Path, default=Path('D:/Users/fishcat/Downloads/cache_install.lua'))
 parser.add_argument('--lua', default='lua53', choices=['lua52', 'lua53'])
 parser.add_argument('--arrays', nargs='+', type=int, default=[1, 6, 10, 30])
@@ -202,13 +202,11 @@ for row in rows:
         continue
     before = next(r for r in rows if r['kind'] == 'before' and r['case'] == row['case']
                   and r['arrays'] == row['arrays'])
-    assert row['first_work'] < before['first_work'], 'fresh intake must start sooner'
-    assert row['total'] <= before['total'], 'response gains must not slow the complete workload'
-    assert row['max_intake_spread'] <= 0.05, 'whole-array intake must stay within one tick in the fixture'
-    if row['case'] == 'overlap':
-        assert row['max_run_gap_during_intake'] < before['max_run_gap_during_intake']
-        assert row['max_run_gap'] < before['max_run_gap'], 'startup must not starve ongoing processing'
-output = root / 'simulation' / f'intake-response-{args.lua}.json'
+    assert row['max_intake_spread'] <= 0.05, 'whole-array enables stay in one fixture tick'
+    assert row['saves'] < before['saves'], 'scan-based recovery should save fewer snapshots'
+    if row['case'] == 'ordinary':
+        assert row['calls'] < before['calls'], 'ordinary progress throttle should reduce callbacks'
+output = root / 'simulation' / f'scan-recovery-{args.lua}.json'
 output.write_text(json.dumps(dict(baseline=args.baseline, assumptions={
     'TPS': 20, 'sync_callback_seconds': 0.05, 'ME_IO_ticks': 1,
     'event_reschedule_seconds': 0.012, 'GPU_call_seconds': 0.0001, 'save_seconds': 0.005,

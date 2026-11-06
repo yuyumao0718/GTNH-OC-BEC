@@ -91,20 +91,10 @@ test('empty-cell retry lasts five seconds within a run and resets after reboot',
     w.time = 86405 * 20
     scan(w)
     assert(s.loading and s.loading.index == 1)
-    for _, oldRecord in ipairs({ false, true }) do
-        local state = U.copy(saved)
-        if oldRecord then
-            state.refill.feeds.raw.retry = { [1] = 86405 }
-            state.refill.feeds.raw.initialized = true
-        end
-        w.time = 0
-        w.boot(state)
-        scan(w)
-        assert(
-            w.state.refill.feeds.raw.loading,
-            'previous uptime must not postpone the next refill'
-        )
-    end
+    w.time = 0
+    w.boot(saved)
+    scan(w)
+    assert(w.state.refill.feeds.raw.loading)
 end)
 
 test('restart preserves raw-fluid claims while their generator is still processing', function()
@@ -119,8 +109,7 @@ test('restart preserves raw-fluid claims while their generator is still processi
     w.boot(U.copy(w.saved))
     scan(w)
     s = w.state.refill.feeds.raw
-    assert(s.pending[1].amount == 576 and not s.loading)
-    assert(s.pending[1].finish['raw:g1'] == 5)
+    assert(w.r.draining and not s.loading and not s.pending[1])
     g.busy, g.progress = false, 0
     w.stock[fluid] = 576
     w.time = 100
@@ -140,7 +129,7 @@ test('restart retains the full reserved amount when only part of the raw fluid r
     w.boot(U.copy(w.saved))
     scan(w)
     local s = w.state.refill.feeds.raw
-    assert(s.pending[1].amount == 576 and not s.pending[1].finish and not s.loading)
+    assert(w.r.draining and s.pending[1].amount == 288 and not s.loading)
 end)
 
 test(
@@ -195,10 +184,37 @@ test(
             end
             assert(not s.loading and s.pending[1].amount == 576, phase)
             assert(w.moves == 2 and w.refills == 1, 'duplicate transfer or loading at ' .. phase)
-            assert(not next(w.state.moves), 'acknowledged transfer must release its saved locks')
+            assert(
+                not w.saved or not w.saved.refill,
+                'precache should recover without a saved transfer'
+            )
             assert(w.inventories['raw:drive'].slots[1] == w.feedCells.raw)
         end
     end
 )
 
+test('all old entanglers must drain before new feed; use the post-drain stock', function()
+    local w = make(1, 0)
+    w.addFeed('raw', 2)
+    w.cfg.fieldLimit = 2000
+    w.cfg.bands[1].low, w.cfg.bands[1].high = 600, 1000
+    w.stock[fluid] = 0
+    local g1, g2 = w.gens['raw:g1'], w.gens['raw:g2']
+    g1.busy, g2.busy = true, true
+    g1.progress, g2.progress = 1, 2
+    w.boot()
+    scan(w)
+    assert(w.r.draining and not w.state.refill.feeds.raw.loading)
+    g1.busy = false
+    w.stock[fluid] = 144
+    w.time = w.time + 101
+    scan(w)
+    assert(w.r.draining and not w.state.refill.feeds.raw.loading)
+    g2.busy = false
+    w.stock[fluid] = 288
+    w.time = w.time + 101
+    scan(w)
+    assert(not w.r.draining and w.e.stock[fluid] == 288 and w.state.refill.feeds.raw.loading)
+    assert(w.saves == 0)
+end)
 print(passed .. ' refill restart test groups passed')

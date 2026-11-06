@@ -88,7 +88,7 @@ local function world(stream, options)
             local s = w.state.arrays[a.address]
             local b = s.batch
             if b and b.phase == 'collect' then
-                assert(not w.arrays[a.address].enabled and not s.lease and not s.bee)
+                assert(not w.arrays[a.address].enabled and (not s.lease or s.bee or s.reuse))
             end
             if b and b.phase == 'run' and not w.seen[b] then
                 w.seen[b] = true
@@ -113,7 +113,8 @@ local function world(stream, options)
                     local n = w.nodes[worker.address]
                     if n.active and worker.key then
                         assert(
-                            n.kind == w.state.patterns[worker.key].pattern.singularity,
+                            not worker.key
+                                or n.kind == w.state.patterns[worker.key].pattern.singularity,
                             'node took wrong singularity'
                         )
                     end
@@ -139,11 +140,15 @@ local function world(stream, options)
             total = total + (entry.count or 1)
         end
         w.untilTrue(function()
-            local done = 0
-            for _, s in pairs(w.state.arrays) do
-                done = done + s.done
+            if w.produced ~= total then
+                return false
             end
-            return done == total and w.index > #w.stream
+            for _, s in pairs(w.state.arrays) do
+                if s.batch or s.bee then
+                    return false
+                end
+            end
+            return true
         end, max)
         assert(w.produced == total and w.admitted == total and w.inputs.common == 0)
     end
@@ -313,24 +318,24 @@ test(
         w.finish()
     end
 )
-test('pause preserves kind ownership and elapsed wait across an uptime reset', function()
-    local w = world({ { kind = 1 } }, { timeout = 20 })
+test('restart scans seven collected nodes and resets the wait', function()
+    local w = world({ { kind = 1, count = 7 } }, { timeout = 20 })
+    w.untilTrue(function()
+        local b = w.state.arrays.a1.batch
+        return b and b.phase == 'collect' and b.collection.elapsed >= 7
+    end)
+    w.e:pause()
+    assert(not w.saved.arrays)
+    w.time = 0
+    w.boot(U.copy(w.saved))
     w.untilTrue(function()
         local b = w.state.arrays.a1.batch
         return b and b.phase == 'collect'
     end)
-    for _ = 1, 140 do
-        w.tick()
-    end
-    w.e:pause()
-    local saved = U.copy(w.saved)
-    local elapsed = saved.arrays.a1.batch.collection.elapsed
-    assert(elapsed >= 6.9 and elapsed < 8)
-    w.time = 0
-    w.boot(saved)
-    assert(w.state.arrays.a1.batch.collection.elapsed == elapsed)
+    local b = w.state.arrays.a1.batch
+    assert(#b.workers == 7 and b.collection.elapsed == 0)
     w.finish()
-    assert(w.starts[1].time >= 20 - elapsed and w.starts[1].time < 20 - elapsed + 4)
+    assert(w.starts[1].time >= 20 and w.starts[1].time < 24)
 end)
 test('editing the global timeout is compatible with collection resume', function()
     local w = world({ { kind = 1 } }, { timeout = 300 })
@@ -344,7 +349,7 @@ test('editing the global timeout is compatible with collection resume', function
     w.e:pause()
     w.state.wiring = U.copy(w.cfg)
     w.cfg.singularityWait = 2
-    assert(Recovery.check(w.cfg, w.state, U, nil, module('ma_materials')))
+    assert(Recovery.check(w.cfg, w.cfg, U))
     w.boot(U.copy(w.state))
     w.finish()
     assert(w.taken[1] == 1)
@@ -428,26 +433,6 @@ test('collected recipes use scarce shared bees and resume every physical bee tra
     end
     assert(not base.starts[1].fixed)
 end)
-test(
-    'lost collection records use existing takeover to process received nodes without guessing missing kinds',
-    function()
-        local w = world({ { kind = 1 }, { kind = 2 } })
-        w.untilTrue(function()
-            local b = w.state.arrays.a1.batch
-            return b and b.phase == 'collect' and #b.workers == 2
-        end)
-        w.e:pause()
-        w.state.arrays = {}
-        w.state.patterns = {}
-        w.state.admission = nil
-        Recovery.adopt(w.e, function()
-            error('no bee should be borrowed while collecting')
-        end)
-        assert(not w.state.arrays.a1.batch.collection)
-        w.boot(U.copy(w.saved))
-        w.finish()
-    end
-)
 test('global threshold is edited from any array and the small-only option is absent', function()
     local ex = dofile(ROOT .. 'examples/two-arrays.lua')
     local gpu = {
@@ -486,20 +471,20 @@ test('global threshold is edited from any array and the small-only option is abs
     ex.cfg.singularityWait = 0
     assert(not pcall(C.validate, ex.cfg, ex.component, U))
 end)
-test(
-    'collection cannot silently resume after a previously accepted node has lost its work',
-    function()
-        local w = world({ { kind = 1 } })
-        w.untilTrue(function()
-            local b = w.state.arrays.a1.batch
-            return b and b.phase == 'collect'
-        end)
-        w.e:pause()
-        w.nodes['a1:n1'].active = false
-        w.boot(U.copy(w.saved))
-        assert(not pcall(w.finish, 100))
+test('empty physical nodes are not recreated from a former collection record', function()
+    local w = world({ { kind = 1 } })
+    w.untilTrue(function()
+        local b = w.state.arrays.a1.batch
+        return b and b.phase == 'collect'
+    end)
+    w.e:pause()
+    w.nodes['a1:n1'].active = false
+    w.boot(U.copy(w.saved))
+    for _ = 1, 100 do
+        w.tick()
     end
-)
+    assert(not w.state.arrays.a1.batch and w.admitted == 1)
+end)
 test(
     'waiting and later arrivals do not repeatedly query already collected recipe metadata',
     function()
@@ -544,7 +529,7 @@ test('three collected kinds resume after display names, targets and timeout chan
     -- Binding order is presentation; the same physical nodes keep their work.
     local nodes = w.cfg.arrays[1].nodes
     nodes[1], nodes[16] = nodes[16], nodes[1]
-    assert(Recovery.check(w.cfg, w.state, U, nil, module('ma_materials')))
+    assert(Recovery.check(w.cfg, w.cfg, U))
     w.boot(U.copy(w.state))
     w.finish()
     for kind = 1, 15 do

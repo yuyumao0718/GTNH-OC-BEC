@@ -458,11 +458,16 @@ local function world(arrayCount, orders, options)
                     error(key .. ': ' .. err)
                 end
             end
-            local done = 0
+            local busy = false
             for _, s in pairs(w.state.arrays) do
-                done = done + s.done
+                busy = busy or s.batch or s.bee
             end
-            if done == orders then
+            if
+                w.produced == orders
+                and not busy
+                and not w.state.admission
+                and #w.state.queue == 0
+            then
                 assert(w.produced == orders and (w.admitted or 0) == orders)
                 return
             end
@@ -508,16 +513,20 @@ local function world(arrayCount, orders, options)
             end
             for id, a in pairs(w.arrays) do
                 actual = actual + a.bees
-                local lease = w.state.arrays[id].lease or {}
-                local count = 0
-                for _, c in pairs(lease) do
+                local state = w.state.arrays[id]
+                local lease = state.lease or {}
+                if state.bee and state.bee.cell then
+                    local c = state.bee.cell
                     local key = c.box .. ':' .. c.slot
-                    assert(not occupied[key], 'shared box/slot double-borrowed')
+                    assert(not occupied[key], 'two transfers claimed one slot')
                     occupied[key] = id
-                    count = count + 1
                 end
-                assert(count <= 1, 'an array must not reserve future tiers')
-                if a.bees > 0 then
+                assert(#U.keys(lease) <= 1)
+                if
+                    a.bees > 0
+                    and not w.e.ports
+                    and (not state.bee or state.bee.phase ~= 'back')
+                then
                     assert(lease[a.tier], 'loaded bees lost their lease')
                 end
             end
@@ -1184,65 +1193,21 @@ test('bee waiting details count only the selected pool and current same-tier lea
     assert(ui:beeWait(e, a) == nil)
 end)
 
-test('direct move resumes after ME-IO has already advanced the cell to output', function()
-    local w = world(1, 0)
-    local state, saved = {}, nil
-    local function proxy(address)
-        return w.components[address]
-    end
-    local function save()
-        saved = U.copy(state)
-    end
-    local log = Log.new(w.cfg, state, proxy, save, U)
-    assert(log:start('cell', 'a1:beeBox', 'a1:load', 1, 1, true))
-    w.crashMove = 1
+test('direct wiring validates one transposer per array', function()
+    local ex = dofile(ROOT .. 'examples/two-arrays.lua')
+    local cfg = ex.cfg
+    local a = cfg.arrays[1]
+    local inv = U.index(cfg.inventories)
+    inv[a.loadPort].transposer = 'TB'
     throws(function()
-        log:tick('cell')
+        C.validate(cfg, ex.component, U)
     end)
-    local slots = w.inventories['a1:load'].slots
-    slots[7], slots[1] = slots[1], nil
-    w.crashMove = nil
-    state = U.copy(saved)
-    log = Log.new(w.cfg, state, proxy, save, U)
-    assert(log:step('cell', 'a1:beeBox', 'a1:load', 1, 1, true))
-    assert(w.moves == 1 and slots[7] and not w.inventories['a1:beeBox'].slots[1])
-    log:finish('cell')
-    assert(not next(state.moves))
-    assert(log:step('return', 'a1:load', 'a1:beeBox', 7, 1))
-    assert(w.moves == 2 and not slots[7] and w.inventories['a1:beeBox'].slots[1])
+    inv[a.loadPort].transposer = 'TA'
+    inv[a.loadPort].side = inv[a.unloadPort].side
+    throws(function()
+        C.validate(cfg, ex.component, U)
+    end)
 end)
-
-test(
-    'direct wiring validates one transposer per array and protects borrowed cell return',
-    function()
-        local ex = dofile(ROOT .. 'examples/two-arrays.lua')
-        local cfg = ex.cfg
-        local a = cfg.arrays[1]
-        local inv = U.index(cfg.inventories)
-        local Recovery = module('ma_recovery')
-        local state = {
-            wiring = U.copy(cfg),
-            arrays = { [a.address] = { lease = { [1] = { box = 1, slot = 1 } } } },
-        }
-        a.name, cfg.beePools[1].name = '新阵列名称', '新蜂群池名称'
-        cfg.singularityWait = 120
-        assert(Recovery.check(cfg, state, U))
-        inv[a.loadPort].side = 4
-        throws(function()
-            Recovery.check(cfg, state, U)
-        end)
-        inv[a.loadPort].side = 1
-        inv[a.loadPort].transposer = 'TB'
-        throws(function()
-            C.validate(cfg, ex.component, U)
-        end)
-        inv[a.loadPort].transposer = 'TA'
-        inv[a.loadPort].side = inv[a.unloadPort].side
-        throws(function()
-            C.validate(cfg, ex.component, U)
-        end)
-    end
-)
 
 test('item identity keeps NBT distinctions and only checks the counting limit', function()
     local a = { name = 'test:item', damage = 0, hasTag = true, tag = 'first' }
@@ -1303,11 +1268,13 @@ test('deleting a bee box removes only its cells and bindings without renumbering
         assert(e:inventory(a.loadPort) and e:inventory(a.unloadPort))
     end
     C.validate(ex.cfg, ex.component, U)
-    local active =
-        { wiring = wiring, arrays = { ['ARRAY-A'] = { lease = { [1] = { box = 1, slot = 1 } } } } }
-    throws(function()
-        Recovery.check(ex.cfg, active, U)
-    end)
+    assert(Recovery.check(ex.cfg, wiring, U, function()
+        return {
+            hasWork = function()
+                return false
+            end,
+        }
+    end))
     formField(e, '新增箱子').run()
     eq(e:boxes(pool), { 1, 2 })
     objectKind(e, 'box', pool)

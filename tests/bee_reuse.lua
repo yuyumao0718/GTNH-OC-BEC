@@ -51,15 +51,14 @@ print('  PASS ten ordinary/fastTier orders reuse bees and set minimum parallel o
 for _, phase in ipairs({ 'idle', 'admit', 'wait', 'run' }) do
     local w = repeated(false)
     local found
-    local save = w.e.io.save
+    local prepare = w.e.grant
     if phase == 'wait' then
-        w.e.io.save = function(state)
-            save(state)
-            local s = state.arrays.a1
-            if s.done == 16 and s.batch and s.batch.phase == 'wait' then
+        w.e.grant = function(e, b)
+            if w.state.arrays.a1.done == 16 and b.phase == 'wait' then
                 found = true
-                error('SIMULATED PRE-START INTERRUPTION')
+                error('simulated interruption before grant')
             end
+            return prepare(e, b)
         end
     end
     for _ = 1, 10000 do
@@ -75,7 +74,7 @@ for _, phase in ipairs({ 'idle', 'admit', 'wait', 'run' }) do
         end
     end
     assert(found, 'missing retained-bee checkpoint ' .. phase)
-    w.e.io.save = save
+    w.e.grant = prepare
     w.e:pause()
     w.boot(U.copy(w.saved))
     w.finish(10000)

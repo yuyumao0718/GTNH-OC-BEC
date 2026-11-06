@@ -12,8 +12,9 @@ function R.new(engine)
         retry = {},
     }, R)
     local e = engine
-    e.s.refill = e.s.refill or { feeds = {}, generators = {}, active = {} }
-    self.s = e.s.refill
+    self.s = { feeds = {}, generators = {}, active = {} }
+    e.s.refill = self.s
+    self.draining = true
     for _, m in ipairs(e.M) do
         self.materials[m.source] = m
     end
@@ -22,15 +23,20 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
-        self.s.feeds[f.id] = self.s.feeds[f.id] or { pending = {} }
-        local s = self.s.feeds[f.id]
-        s.initialized, s.retry = nil, nil
+        local state = { pending = {} }
+        self.s.feeds[f.id] = state
         self.retry[f.id] = {}
-        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口选择有误：' .. f.io)
+        assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口应有 12 个槽')
         for i, c in ipairs(f.cells) do
-            local loading = self.s.feeds[f.id].loading
-            if not loading or loading.index ~= i then
-                self:cell(c)
+            local stack = e.log:stack(c.inventory, c.slot)
+            if stack then
+                self:cell(c, stack)
+            else
+                assert(
+                    not state.loading and (e.log:stack(f.io, 1) or e.log:stack(f.io, 7)),
+                    '请将预缓存流体元件放回登记的驱动器槽位'
+                )
+                state.loading = { index = i, phase = 'io' }
             end
         end
     end
@@ -76,12 +82,9 @@ function R:generators(feed)
             if s.busy and (not busy or progress < s.progress) then
                 s.epoch = s.epoch + 1
             end
-            if s.busy ~= busy or s.progress ~= progress then
-                e.dirty = true
-            end
             s.busy, s.progress = busy, progress
             self.enabled = self.enabled or {}
-            if not feed and not self.enabled[g.address] then
+            if not self.enabled[g.address] then
                 p.setWorkAllowed(true)
                 self.enabled[g.address] = true
             end
@@ -97,26 +100,13 @@ function R:observe(f)
         if not s.loading or s.loading.index ~= i then
             local m = self.materials[c.material]
             local pending = s.pending[i]
-            local amount, capacity
+            local amount
             if not self.initialized[f.id] or pending and not pending.finish then
-                amount, capacity = self:cell(c)
+                amount = self:cell(c)
             end
             -- A machine can start between the earlier machine sample and this cell read.
-            if not self.initialized[f.id] or pending and not pending.finish and amount < m.unit then
+            if pending and not pending.finish and amount < m.unit then
                 self:generators(f.id)
-            end
-            if not self.initialized[f.id] and not pending then
-                local busy = false
-                for _, g in ipairs(e.cfg.generators) do
-                    if g.feed == f.id and self.s.generators[g.address].busy then
-                        busy = true
-                    end
-                end
-                if amount >= m.unit or busy then
-                    pending = { amount = busy and capacity or amount }
-                    s.pending[i] = pending
-                    e.dirty = true
-                end
             end
             if pending then
                 if pending.finish then
@@ -130,11 +120,9 @@ function R:observe(f)
                     if done then
                         s.pending[i] = nil
                         released = true
-                        e.dirty = true
                     end
                 elseif amount < m.unit then
                     pending.finish = {}
-                    e.dirty = true
                     for _, g in ipairs(e.cfg.generators) do
                         if g.feed == f.id then
                             local gs = self.s.generators[g.address]
@@ -147,7 +135,6 @@ function R:observe(f)
             end
             if not s.pending[i] and amount and amount >= m.unit then
                 s.pending[i] = { amount = amount }
-                e.dirty = true
             end
         end
     end
@@ -163,11 +150,9 @@ function R:receive(f)
         return
     end
     local c = f.cells[task.index]
-    local owner = 'refill:' .. f.id
     if task.phase == 'out' then
-        if e.log:step(owner, c.inventory, f.io, c.slot, 1, true) then
+        if e.log:transfer(c.inventory, f.io, c.slot, 1) then
             task.phase = 'io'
-            e.log:finish(owner)
         end
     elseif task.phase == 'io' then
         local wait = self.returns[f.id]
@@ -183,19 +168,17 @@ function R:receive(f)
             self.returns[f.id] = nil
             task.amount = self:cell(c, stack)
             task.phase = 'back'
-            e.save()
         elseif e.now - wait.since >= 30 then
             wait.nextAt = e.now + 1
         end
     elseif task.phase == 'back' then
-        if e.log:step(owner, f.io, c.inventory, 7, c.slot) then
+        if e.log:transfer(f.io, c.inventory, 7, c.slot) then
             if task.amount >= self.materials[c.material].unit then
                 s.pending[task.index] = { amount = task.amount }
             else
                 self.retry[f.id][task.index] = e.now + 5
             end
             s.loading = nil
-            e.log:finish(owner)
         end
     end
 end
@@ -216,11 +199,34 @@ end
 
 function R:scan()
     local e = self.e
-    self:generators()
+    if not self.draining then
+        self:generators()
+    end
     local released = false
     for _, f in ipairs(e.cfg.feeds) do
         released = self:observe(f) or released
         self:receive(f)
+    end
+    if self.draining then
+        -- Read machines after their input cells: a cell may just have emptied into a new cycle.
+        for _, f in ipairs(e.cfg.feeds) do
+            self:generators(f.id)
+        end
+        local old = false
+        for _, g in pairs(self.s.generators) do
+            old = old or g.busy
+        end
+        for _, f in pairs(self.s.feeds) do
+            old = old or f.loading or next(f.pending)
+        end
+        if old then
+            for _, f in ipairs(e.cfg.feeds) do
+                self.detail[f.id] = '等待已有纠缠加工完成'
+            end
+            return
+        end
+        self.draining = false
+        released = true
     end
     -- Accepted orders may still need condensate while a normal shutdown drains them.
     if e.stopping and #e.s.queue == 0 then
@@ -245,7 +251,7 @@ function R:scan()
         end
         if s.loading then
             local key = self.materials[f.cells[s.loading.index].material].condensate
-            pending[key] = (pending[key] or 0) + s.loading.capacity
+            pending[key] = (pending[key] or 0) + (s.loading.capacity or 0)
         end
     end
     -- Potential output is retained until every generator consuming that cell has finished.
@@ -253,15 +259,11 @@ function R:scan()
     for _, b in ipairs(e.cfg.bands) do
         local m = self.materials[b.material]
         local free = (e.stock[m.condensate] or 0) - (e.reserved[m.condensate] or 0)
-        local wasActive = self.s.active[b.material]
         if free <= b.low or free < (e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = true
         end
         if free >= math.max(b.high, e.waiting[m.condensate] or 0) then
             self.s.active[b.material] = false
-        end
-        if wasActive ~= self.s.active[b.material] then
-            e.dirty = true
         end
     end
     for _, f in ipairs(e.cfg.feeds) do
@@ -299,7 +301,6 @@ function R:scan()
                         pending[m.condensate] = (pending[m.condensate] or 0) + cap
                         capacity = capacity + cap
                         self.detail[f.id] = '搬运流体元件'
-                        e.save()
                         break
                     else
                         self.detail[f.id] = '当前元件完全存入有超出场强上限风险'
