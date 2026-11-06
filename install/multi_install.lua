@@ -955,8 +955,7 @@ function E:channel(c)
     end
     self.s.patterns[p.key] = self.s.patterns[p.key] or { pattern = p }
     self.s.patterns[p.key].pattern = p
-    self.s.queue[1] = { id = self.s.nextId, key = p.key, count = count }
-    self.s.nextId = self.s.nextId + 1
+    self.s.queue[1] = { key = p.key, count = count }
     self.settled[c.id] = nil
     self:subscribe(false)
 end
@@ -1295,123 +1294,6 @@ function E:beeWaiting(a, s)
     end
     return false
 end
--- Only pending large orders sample fastTier nodes. Ordinary progress is already cached.
-function E:finishSample(a, deadline)
-    local s = self.s.arrays[a.address]
-    local b = s.batch
-    if not b or b.phase ~= 'run' or s.bee or s.request or not s.lease then
-        return
-    end
-    local steps = self.s.patterns[b.key].steps
-    local last = steps[#steps]
-    local workers = {}
-    if b.fixed then
-        for _, w in ipairs(b.workers) do
-            if self.io.time() >= deadline then
-                return
-            end
-            local n = self.io.proxy(w.address)
-            if not self:worker(w).done and n.hasWork() then
-                local progress = n.getWorkProgress()
-                if progress < last.start then
-                    return
-                end
-                workers[#workers + 1] = { address = w.address, progress = progress }
-            end
-        end
-    else
-        workers = self.observations[a.address] or {}
-    end
-    local sample = { at = math.max(self.now, self.io.time()), finish = last.finish, nodes = {} }
-    for _, w in pairs(workers) do
-        if w.progress < last.start then
-            return
-        end
-        sample.nodes[w.address] = w.progress
-    end
-    if next(sample.nodes) then
-        return sample
-    end
-end
-
-function E:awaitFinishing(order, eligible)
-    local wait = self.finishWait
-    if not wait then
-        if order.considered then
-            return false
-        end
-        order.considered = true
-        local samples = {}
-        local deadline = self.now + 5
-        for _, a in ipairs(eligible) do
-            local sample = self:finishSample(a, deadline)
-            if sample then
-                samples[a.address] = sample
-            end
-        end
-        if not next(samples) then
-            return false
-        end
-        wait = {
-            id = order.id,
-            untilTime = deadline,
-            sampled = math.max(self.now, self.io.time()),
-            samples = samples,
-        }
-        self.finishWait = wait
-    end
-    if math.max(self.now, self.io.time()) >= wait.untilTime then
-        self.finishWait = nil
-        return false
-    end
-    if not wait.targets and self.now - wait.sampled >= 1 then
-        wait.targets = {}
-        for id, old in pairs(wait.samples) do
-            local current = self:finishSample(self.byAddress[id], wait.untilTime)
-            local soon = current ~= nil
-            if current then
-                for address, progress in pairs(current.nodes) do
-                    local prior = old.nodes[address]
-                    local delta = prior and progress - prior or 0
-                    if
-                        delta <= 0
-                        or (current.finish - progress) * (current.at - old.at) / delta
-                            > wait.untilTime - current.at - 0.5
-                    then
-                        soon = false
-                    end
-                end
-            end
-            if soon then
-                wait.targets[id] = true
-            end
-        end
-        wait.samples = nil
-    end
-    if self.io.time() >= wait.untilTime then
-        self.finishWait = nil
-        return false
-    end
-    if wait.targets then
-        local busy = false
-        for id in pairs(wait.targets) do
-            local s = self.s.arrays[id]
-            if s.batch or s.bee or s.lease and not s.reuse then
-                busy = true
-            end
-        end
-        if not busy then
-            self.finishWait = nil
-            return false
-        end
-    end
-    self.status[self.cfg.channels[1].id] = string.format(
-        '等待即将空闲的阵列（最多 %.0f 秒）',
-        math.ceil(wait.untilTime - self.now)
-    )
-    return true
-end
-
 function E:collections()
     for _, a in ipairs(self.arrays) do
         local b = self.s.arrays[a.address].batch
@@ -1467,7 +1349,6 @@ function E:collectOrder(order, idle)
     if order.count == 0 then
         self.s.queue = {}
     end
-    self.finishWait = nil
 end
 
 function E:schedule()
@@ -1476,15 +1357,17 @@ function E:schedule()
         return
     end
     local meta = self.s.patterns[order.key]
-    local idle, eligible = {}, {}
+    local idle = {}
     for _, a in ipairs(self.arrays) do
         local s = self.s.arrays[a.address]
-        local capable = self:poolSupports(a, meta)
-        if capable and not self.errors[a.address] then
-            eligible[#eligible + 1] = a
-            if not s.batch and not s.bee and (not s.lease or s.reuse) then
-                idle[#idle + 1] = a
-            end
+        if
+            not s.batch
+            and not s.bee
+            and (not s.lease or s.reuse)
+            and not self.errors[a.address]
+            and self:poolSupports(a, meta)
+        then
+            idle[#idle + 1] = a
         end
     end
     if meta.pattern.singularity then
@@ -1495,18 +1378,12 @@ function E:schedule()
         self.status[self.cfg.channels[1].id] = '等待空闲阵列'
         return
     end
-    local small = false
     for _, a in ipairs(idle) do
         if order.count <= #a.nodes then
             idle = { a }
-            small = true
             break
         end
     end
-    if not small and self:awaitFinishing(order, eligible) then
-        return
-    end
-    self.finishWait = nil
     local chosen, nodes = {}, 0
     for _, a in ipairs(idle) do
         chosen[#chosen + 1] = a

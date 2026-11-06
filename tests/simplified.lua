@@ -207,57 +207,41 @@ test('a small order uses one fitting array when idle arrays have different node 
     w.finish()
     assert(w.state.arrays.a1.done == 0 and w.state.arrays.a2.done == 3)
 end)
-local function pending(fast)
-    local w = make(3, 0)
-    local e = w.e
-    e.now = 10
-    e.s.queue = { { id = 1, key = 'test', count = 100 } }
-    e.s.patterns.test = {
-        pattern = { label = '测试', inputs = {} },
-        steps = { { tier = 1, start = 0, finish = 50 }, { tier = 2, start = 50, finish = 100 } },
-    }
-    for _, id in ipairs({ 'a2', 'a3' }) do
-        local s = e.s.arrays[id]
-        s.batch =
-            { key = 'test', phase = 'run', count = 10, workers = {}, fixed = fast and 2 or nil }
-        s.lease = { [2] = { box = 1, slot = 2 } }
-        e.observations[id] = {}
-        for j = 1, 2 do
-            local address = id .. ':n' .. j
-            s.batch.workers[j] = { address = address, count = 5 }
-            local n = w.nodes[address]
-            n.active = true
-            n.progress = 80
-            e.observations[id][j] = { address = address, progress = 80 }
+test('a large order takes the first idle array even when another is about to finish', function()
+    for _, fast in ipairs({ false, true }) do
+        local w = make(2, 0, { nodes = 16 })
+        local e = w.e
+        e.s.patterns.test = {
+            pattern = {},
+            steps = { { tier = 1, start = 0, finish = 100 } },
+        }
+        e.s.queue[1] = { key = 'test', count = 32000 }
+        local first, second = e.s.arrays.a1, e.s.arrays.a2
+        first.batch = { phase = 'return' }
+        local node = 'a2:n1'
+        local active = {
+            key = 'test',
+            phase = 'run',
+            workers = { { address = node, count = 1 } },
+            fixed = fast and 1 or nil,
+        }
+        second.batch, second.lease = active, { [1] = true }
+        e.observations.a2 = { { address = node, progress = 99 } }
+        w.components[node].hasWork = function()
+            error('dispatch must not poll a busy node')
         end
-    end
-    return w, e
-end
-local function progress(w, e, id, value)
-    for j = 1, 2 do
-        w.nodes[id .. ':n' .. j].progress = value
-        e.observations[id][j].progress = value
-    end
-end
-test('prediction uses real ordinary observations including gaps left by completed nodes', function()
-    for _, completed in ipairs({ false, true }) do
-        local w, e = pending(false)
-        for _, id in ipairs({ 'a2', 'a3' }) do
-            w.arrays[id].tier = 2
-            w.arrays[id].bees = 32
-            w.arrays[id].enabled = true
-            e.beeChecked[id] = { tier = 2, count = 32 }
-            e.held[id] = nil
-            if completed then
-                w.nodes[id .. ':n1'].active = false
-            end
-            e:array(e.byAddress[id])
-        end
-        local sample = e:finishSample(e.byAddress.a2, 15)
-        assert(sample and sample.nodes['a2:n2'] == 80)
-        assert((sample.nodes['a2:n1'] == nil) == completed)
+        w.components[node].getWorkProgress = w.components[node].hasWork
         e:schedule()
-        assert(e.finishWait and not e.s.admission)
+        assert(not e.s.admission and e.s.queue[1].count == 32000)
+
+        first.batch = nil
+        e:schedule()
+        assert(e.s.admission and #e.s.admission.members == 1 and e.s.admission.members[1] == 'a1')
+        assert(not e.s.queue[1] and second.batch == active)
+        assert(#first.batch.workers == 16 and first.batch.count == 32000)
+        for _, worker in ipairs(first.batch.workers) do
+            assert(worker.count == 2000)
+        end
     end
 end)
 
@@ -324,127 +308,6 @@ test('leftover bee recovery resumes at every save and physical transfer', functi
     )
 end)
 
-test('prediction waits for final-stage arrays and dispatches to actual idle arrays', function()
-    local w, e = pending(false)
-    e:schedule()
-    assert(e.finishWait and not e.s.admission)
-    e.now = 11
-    progress(w, e, 'a2', 86)
-    progress(w, e, 'a3', 86)
-    e:schedule()
-    assert(e.finishWait.targets.a2 and e.finishWait.targets.a3)
-    e.now = 13
-    for _, id in ipairs({ 'a2', 'a3' }) do
-        e.s.arrays[id].batch = nil
-        e.s.arrays[id].lease = nil
-    end
-    e:schedule()
-    assert(#e.s.admission.members == 3 and not e.finishWait)
-end)
-test('five-second deadline cannot extend when a prediction fails', function()
-    local w, e = pending(false)
-    e:schedule()
-    e.now = 11
-    progress(w, e, 'a2', 86)
-    progress(w, e, 'a3', 86)
-    e:schedule()
-    e.now = 14.9
-    e:schedule()
-    assert(not e.s.admission)
-    e.now = 15
-    e:schedule()
-    assert(#e.s.admission.members == 1 and e.s.arrays.a1.batch.count == 100)
-end)
-test('a stalled node, earlier stage or bee waiter is not predicted as finishing', function()
-    for _, kind in ipairs({ 'stalled', 'early', 'bee', 'slowest' }) do
-        local w, e = pending(false)
-        if kind == 'early' then
-            for _, id in ipairs({ 'a2', 'a3' }) do
-                progress(w, e, id, 40)
-            end
-        elseif kind == 'bee' then
-            for _, id in ipairs({ 'a2', 'a3' }) do
-                e.s.arrays[id].request = { tier = 2 }
-            end
-        end
-        e:schedule()
-        if kind == 'stalled' or kind == 'slowest' then
-            e.now = 11
-            if kind == 'slowest' then
-                for _, id in ipairs({ 'a2', 'a3' }) do
-                    e.observations[id][1].progress = 99
-                end
-            end
-            e:schedule()
-        end
-        assert(e.s.admission and #e.s.admission.members == 1)
-    end
-end)
-test('small orders and an empty queue trigger no prediction callbacks', function()
-    local w, e = pending(true)
-    local calls = 0
-    for _, n in pairs(w.components) do
-        if n.getWorkProgress then
-            local old = n.getWorkProgress
-            n.getWorkProgress = function()
-                calls = calls + 1
-                return old()
-            end
-        end
-    end
-    e.s.queue = {}
-    e:schedule()
-    assert(calls == 0)
-    e.s.queue = { { id = 2, key = 'test', count = 2 } }
-    e:schedule()
-    assert(calls == 0 and e.s.admission)
-end)
-test('ordinary prediction adds no component calls; fastTier samples only twice', function()
-    for _, fast in ipairs({ false, true }) do
-        local w, e = pending(fast)
-        local calls = 0
-        for _, n in pairs(w.components) do
-            for _, name in ipairs({ 'getWorkProgress', 'hasWork' }) do
-                if n[name] then
-                    local old = n[name]
-                    n[name] = function(...)
-                        calls = calls + 1
-                        return old(...)
-                    end
-                end
-            end
-        end
-        e:schedule()
-        local first = calls
-        for i = 1, 19 do
-            e.now = 10 + i * 0.05
-            e:schedule()
-        end
-        assert(calls == first)
-        e.now = 11
-        progress(w, e, 'a2', 86)
-        progress(w, e, 'a3', 86)
-        e:schedule()
-        local total = calls
-        for i = 1, 79 do
-            e.now = 11 + i * 0.05
-            e:schedule()
-        end
-        assert(calls == total and total == (fast and 16 or 0))
-        print('    prediction component callbacks (' .. tostring(fast) .. '): ' .. total)
-    end
-end)
-test(
-    'a saved waiting order is not assigned to busy arrays or made to wait twice after restart',
-    function()
-        local w, e = pending(false)
-        e:schedule()
-        assert(e.s.queue[1].considered)
-        e.finishWait = nil
-        e:schedule()
-        assert(#e.s.admission.members == 1)
-    end
-)
 test(
     'takeover preserves separate active recipes and manually confirms unknown bee ownership',
     function()
@@ -633,78 +496,6 @@ test('active recipes survive takeover even when arrays have different recipe ste
     assert(a and b and not U.equal(w.state.patterns[a.key].steps, w.state.patterns[b.key].steps))
     w.finish(5000)
 end)
-test(
-    'a slow component callback cannot keep restarting the five-second prediction deadline',
-    function()
-        local w, e = pending(true)
-        local elapsed = 10
-        e.io.time = function()
-            return elapsed
-        end
-        for _, n in pairs(w.components) do
-            if n.getWorkProgress then
-                local old = n.getWorkProgress
-                n.getWorkProgress = function()
-                    elapsed = elapsed + 2
-                    return old()
-                end
-            end
-        end
-        e:schedule()
-        assert(e.s.admission and #e.s.admission.members == 1 and elapsed <= 16)
-    end
-)
-test(
-    'sixteen-node fastTier prediction has a bounded callback count at six and ten arrays',
-    function()
-        for _, arrays in ipairs({ 6, 10 }) do
-            local w = make(arrays, 0, { nodes = 16 })
-            local e = w.e
-            e.now = 10
-            e.s.patterns.test = {
-                pattern = { label = '测试' },
-                steps = {
-                    { tier = 2, start = 0, finish = 100 },
-                },
-            }
-            e.s.queue = { { id = 1, key = 'test', count = 32000 } }
-            local calls = 0
-            for i = 2, arrays do
-                local id = 'a' .. i
-                local s = e.s.arrays[id]
-                s.batch = { phase = 'run', key = 'test', fixed = 2, workers = {} }
-                s.lease = { [2] = {} }
-                for j = 1, 16 do
-                    local addr = id .. ':n' .. j
-                    s.batch.workers[j] = { address = addr, count = 1 }
-                    w.nodes[addr].active = true
-                    w.nodes[addr].progress = 80
-                    for _, name in ipairs({ 'hasWork', 'getWorkProgress' }) do
-                        local old = w.components[addr][name]
-                        w.components[addr][name] = function(...)
-                            calls = calls + 1
-                            return old(...)
-                        end
-                    end
-                end
-            end
-            e:schedule()
-            e.now = 11
-            for _, n in pairs(w.nodes) do
-                n.progress = 86
-            end
-            e:schedule()
-            assert(calls == (arrays - 1) * 16 * 4)
-            print(
-                '    '
-                    .. arrays
-                    .. ' arrays / 16 nodes / two fastTier samples: '
-                    .. calls
-                    .. ' callbacks'
-            )
-        end
-    end
-)
 test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', function()
     for _, action in ipairs({
         'quit',

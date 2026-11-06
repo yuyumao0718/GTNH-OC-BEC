@@ -91,7 +91,6 @@ for i = 1, 19 do
     e.reserved[M[i].condensate] = i < 4 and 3000000 or 0
 end
 e.stock[M[5].condensate] = 200000
-e.s.queue[1] = {}
 for i, a in ipairs(e.arrays) do
     local s = { done = 128 * i }
     e.s.arrays[a.address] = s
@@ -115,7 +114,7 @@ for i, a in ipairs(e.arrays) do
         end
     end
 end
-e.status['公共原料子网'] = '等待即将空闲的阵列（最多 3 秒）'
+e.status['公共原料子网'] = '等待 AE 下单'
 C.defaults(cfg)
 C.validate(cfg, nil, U)
 return {
