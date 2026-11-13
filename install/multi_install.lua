@@ -705,6 +705,8 @@ function E.new(cfg, state, io, modules)
         errors = {},
         observations = {},
         provided = {},
+        beeNodes = {},
+        beeProbes = {},
         prepareIndex = 1,
         held = {},
         nodeCache = {},
@@ -1146,16 +1148,45 @@ function E:beeAccess(a, c)
     return self.boxes[a.address][c.box]
 end
 
+-- Try one node per poll. Only a missing tier or zero count starts a search;
+-- a healthy representative keeps the existing quantity cache and call count.
+function E:readBees(a, want, cached, tierOnly)
+    local probe = self.beeProbes[a.address]
+    local index = probe or self.beeNodes[a.address] or 1
+    local n = self.io.proxy(a.nodes[index].address)
+    local provided = n.getProvidedTier()
+    local missing = not provided
+    if provided and (not want or provided.tier == want) then
+        local count
+        if not tierOnly or probe then
+            count = (not probe and cached) or n.getAvailableNanites()
+        end
+        if not count or count > 0 then
+            self.beeNodes[a.address], self.beeProbes[a.address] = index, nil
+            return provided.tier, count
+        end
+        missing = true
+    end
+    if missing or probe then
+        self.beeProbes[a.address] = index % #a.nodes + 1
+    end
+end
+
 -- A slot is reserved only while its cell is physically in an ME-IO port.
 function E:scanBees()
     local pending, holes = {}, {}
     for _, a in ipairs(self.arrays) do
         local s = { done = 0, counts = {} }
         self.s.arrays[a.address] = s
-        local n = self.io.proxy(a.nodes[1].address)
-        local provided = n.getProvidedTier()
-        local tier = provided and provided.tier
-        local count = tier and n.getAvailableNanites() or 0
+        local tier, count
+        -- Startup must distinguish an empty array from an unreadable first node.
+        for _ = 1, #a.nodes do
+            tier, count = self:readBees(a)
+            if tier then
+                break
+            end
+        end
+        self.beeProbes[a.address] = nil
         self.provided[a.address] = tier
         if tier then
             s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
@@ -1213,13 +1244,12 @@ function E:resolvePorts()
                         task.loading,
                         '蜂群元件在 ME-IO 端口中，无法辨认等级；请按等级归位后重新运行'
                     )
-                    local n = self.io.proxy(task.a.nodes[1].address)
-                    local provided = n.getProvidedTier()
+                    local provided = self:readBees(task.a, nil, nil, true)
                     if not provided then
                         ports.index = i
                         return false
                     end
-                    tier = provided.tier
+                    tier = provided
                     break
                 end
             end
@@ -1609,17 +1639,11 @@ function E:bees(a, s, want)
             return false
         end
     end
-    local n = self.io.proxy(a.nodes[1].address)
     local current, count
     if b.loading then
-        local provided = n.getProvidedTier()
-        if not provided or provided.tier ~= b.tier then
-            return false
-        end
-        current = b.tier
-        local cacheKey = a.address .. ':' .. current .. ':' .. tostring(b.amount)
-        count = b.amount and self.effective[cacheKey] or n.getAvailableNanites()
-        if count == 0 then
+        local cacheKey = a.address .. ':' .. b.tier .. ':' .. tostring(b.amount)
+        current, count = self:readBees(a, b.tier, b.amount and self.effective[cacheKey])
+        if not current then
             return false
         end
         self.effective[cacheKey] = count
@@ -1627,6 +1651,7 @@ function E:bees(a, s, want)
         self.charge[a.beePool][cellKey(c)] = 0
         s.counts[current] = count
     else
+        local n = self.io.proxy(a.nodes[self.beeNodes[a.address] or 1].address)
         if n.getAvailableNanites() ~= 0 then
             return false
         end
