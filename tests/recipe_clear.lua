@@ -144,6 +144,7 @@ do
         files[name] = U.copy(value)
     end
     local ui = {
+        startup = function() end,
         runtime = function() end,
         discardInput = function()
             return false

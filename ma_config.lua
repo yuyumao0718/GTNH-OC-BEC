@@ -231,7 +231,10 @@ function C.unboundDoors(cfg, devices)
     return doors
 end
 
-function C.validate(cfg, component, U)
+function C.validate(cfg, component, U, progress)
+    if progress then
+        progress('校验配置', '检查设备绑定和元件位置')
+    end
     local function basic(fields, value, path)
         for _, f in ipairs(fields) do
             local v = value[f.key]
@@ -403,6 +406,7 @@ function C.validate(cfg, component, U)
     end
     if component then
         local devices = {}
+        local count = 0
         local function visit(fields, value)
             for _, f in ipairs(fields) do
                 if f.kind == 'list' then
@@ -414,6 +418,17 @@ function C.validate(cfg, component, U)
                     local kind = f.source:sub(8)
                     local d = devices[a]
                     if not d then
+                        if progress then
+                            progress(
+                                '检查设备连接',
+                                f.label
+                                    .. ' · '
+                                    .. a:sub(1, 12)
+                                    .. '；已检查 '
+                                    .. count
+                                    .. ' 个设备'
+                            )
+                        end
                         d = {
                             kind = assert(
                                 component.type(a),
@@ -421,6 +436,7 @@ function C.validate(cfg, component, U)
                             ),
                         }
                         devices[a] = d
+                        count = count + 1
                     end
                     if kind == 'assembler' or kind == 'generator' then
                         d.methods = d.methods or component.methods(a)
@@ -433,6 +449,9 @@ function C.validate(cfg, component, U)
             end
         end
         visit(C.schema, checked)
+        if progress then
+            progress('检查设备连接', '设备连接检查完成', count, count)
+        end
     end
     return true
 end

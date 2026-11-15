@@ -62,6 +62,12 @@ for width, height in ((120, 38), (80, 25), (160, 50)):
     canvas.save(out / f'runtime-{width}.png')
     if width == 120:
         canvas.save(root / 'wiki' / 'runtime.png')
+    lua.execute('''
+      ui:startup({stage='接管节点任务',detail='观测阵列 2',done=8,total=16,elapsed=12})
+    ''')
+    canvas.save(out / f'startup-{width}.png')
+    if width == 160:
+        canvas.save(root / 'wiki' / 'startup.png')
     for name, index in (('fast', 1), ('progress', 2), ('idle', 4)):
         lua.execute(f'ui.arrayIndex={index}; ui:runtime(fixture.engine,fixture.refill)')
         if width == 160:

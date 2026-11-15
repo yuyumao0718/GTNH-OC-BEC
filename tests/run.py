@@ -28,6 +28,7 @@ for version in ('lua52', 'lua53'):
     lua.execute('dofile(ROOT .. "tests/refill_restart.lua")')
     lua.execute('dofile(ROOT .. "tests/audit_fixes.lua")')
     lua.execute('dofile(ROOT .. "tests/runtime_progress.lua")')
+    lua.execute('dofile(ROOT .. "tests/startup.lua")')
     lua.execute('dofile(ROOT .. "tests/responsiveness.lua")')
     lua.execute('dofile(ROOT .. "tests/processing.lua")')
     lua.execute('dofile(ROOT .. "tests/bee_advancement.lua")')

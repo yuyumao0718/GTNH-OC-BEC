@@ -886,7 +886,11 @@ function F:act(action, button)
                     self:placeFeedCell(feed, cell)
                 end
             end
-            self.ui.C.validate(self.cfg, self.component, self.save.U)
+            local progress = self.save.progress and self.save.progress()
+            self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
+            if progress then
+                progress('保存配置', '正在保存设备配置')
+            end
             self.save.write(self.cfg)
         end)
         if ok then

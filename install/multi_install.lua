@@ -67,6 +67,21 @@ local function compatible(cfg, state)
     return Recovery.check(cfg, state, U, component.proxy)
 end
 
+local function startupProgress()
+    local status = { since = computer.realTime() }
+    local lastStage, lastDraw
+    local function progress(stage, detail, done, total)
+        local now = computer.realTime()
+        status.stage, status.detail, status.done, status.total = stage, detail, done, total
+        status.elapsed = now - status.since
+        if stage ~= lastStage or now - lastDraw >= 0.25 or total and done == total then
+            screen():startup(status)
+            lastStage, lastDraw = stage, now
+        end
+    end
+    return progress, status
+end
+
 local function configure()
     local readable, cfg = pcall(function()
         return C.defaults(store.read('multi.setup') or store.read('multi.cfg'))
@@ -81,6 +96,7 @@ local function configure()
     end
     local result = screen():edit(cfg, component, {
         U = U,
+        progress = startupProgress,
         clearRecipes = function()
             Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
             return store.clearRecipes()
@@ -108,12 +124,21 @@ if command == 'setup' then
 end
 local ok, err = xpcall(function()
     repeat
+        local progress, loading
+        if command ~= 'check' then
+            progress, loading = startupProgress()
+            progress('读取配置', '正在读取设备配置')
+        end
         local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
-        C.validate(cfg, component, U)
+        C.validate(cfg, component, U, progress)
+        if progress then
+            progress('读取配方缓存', '正在读取已学习的配方')
+        end
         local state = store.read('multi.state') or {}
         engine = Core.new(cfg, state, {
             proxy = component.proxy,
             time = computer.uptime,
+            startup = progress,
             save = function(s)
                 store.write('multi.state', s)
             end,
@@ -137,8 +162,11 @@ local ok, err = xpcall(function()
             return
         end
         command = 'run'
+        loading.cfg = cfg
+        engine.loading = loading
         engine:start()
         local refill = Refill.new(engine)
+        progress('等待约束场', '等待约束场完成当前周期')
         local lastDraw
         local editing = false
         local stopping = false
@@ -167,6 +195,13 @@ local ok, err = xpcall(function()
         end
         local function draw()
             local now = computer.realTime()
+            if engine.loading then
+                engine.loading.elapsed = now - loading.since
+                if engine.recovered and engine.reserved then
+                    engine.loading, engine.io.startup = nil, nil
+                    lastDraw = -math.huge
+                end
+            end
             if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now
@@ -466,7 +501,10 @@ function C.unboundDoors(cfg, devices)
     return doors
 end
 
-function C.validate(cfg, component, U)
+function C.validate(cfg, component, U, progress)
+    if progress then
+        progress('校验配置', '检查设备绑定和元件位置')
+    end
     local function basic(fields, value, path)
         for _, f in ipairs(fields) do
             local v = value[f.key]
@@ -638,6 +676,7 @@ function C.validate(cfg, component, U)
     end
     if component then
         local devices = {}
+        local count = 0
         local function visit(fields, value)
             for _, f in ipairs(fields) do
                 if f.kind == 'list' then
@@ -649,6 +688,17 @@ function C.validate(cfg, component, U)
                     local kind = f.source:sub(8)
                     local d = devices[a]
                     if not d then
+                        if progress then
+                            progress(
+                                '检查设备连接',
+                                f.label
+                                    .. ' · '
+                                    .. a:sub(1, 12)
+                                    .. '；已检查 '
+                                    .. count
+                                    .. ' 个设备'
+                            )
+                        end
                         d = {
                             kind = assert(
                                 component.type(a),
@@ -656,6 +706,7 @@ function C.validate(cfg, component, U)
                             ),
                         }
                         devices[a] = d
+                        count = count + 1
                     end
                     if kind == 'assembler' or kind == 'generator' then
                         d.methods = d.methods or component.methods(a)
@@ -668,6 +719,9 @@ function C.validate(cfg, component, U)
             end
         end
         visit(C.schema, checked)
+        if progress then
+            progress('检查设备连接', '设备连接检查完成', count, count)
+        end
     end
     return true
 end
@@ -779,6 +833,12 @@ function E:items(address)
     return counts
 end
 
+function E:startup(stage, detail, done, total)
+    if self.io.startup then
+        self.io.startup(stage, detail, done, total)
+    end
+end
+
 function E:stockRead(refresh)
     if refresh or self.stockAt ~= self.now then
         self.stock = self.storage.getStoredCondensate()
@@ -852,7 +912,8 @@ function E:pause()
     self.resourceScan = nil
     pcall(self.subscribe, self, false)
     pcall(self.gate, self, self.cfg.channels[1], true)
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('暂停节点取料', a, i - 1, #self.arrays)
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
             pcall(function()
@@ -871,11 +932,13 @@ function E:catalogsRead()
         for index, source in ipairs(c.patterns) do
             local p = self.io.proxy(source.address)
             for slot = 1, source.slots do
+                self:startup('读取处理样板', '样板接口 ' .. index, slot - 1, source.slots)
                 local v = p.getInterfacePattern(slot)
                 if v then
                     patterns[index .. ':' .. slot] = v
                 end
             end
+            self:startup('读取处理样板', '样板接口 ' .. index, source.slots, source.slots)
         end
         self.catalogs[c.id] = self.I.catalog(patterns)
     end
@@ -887,7 +950,8 @@ function E:check()
         '公共原料子网 ME 控制器不支持物品变化事件，请检查 OC 版本'
     )
     self:catalogsRead()
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('检查观测阵列', a, i - 1, #self.arrays)
         local d = self.io.proxy(a.diode)
         assert(d.hasWork() and d.isWorkAllowed(), '请先启动麦克斯韦门：' .. a.address)
         for _, id in ipairs({ a.loadPort, a.unloadPort }) do
@@ -897,6 +961,7 @@ function E:check()
             )
         end
     end
+    self:startup('检查约束场', '检查运行状态与凝聚物库存')
     assert(
         self.storage.hasWork() and self.storage.isWorkAllowed(),
         '请先启动约束场并持续供电'
@@ -910,18 +975,21 @@ end
 
 function E:start()
     self.wasEnabled = {}
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('读取阵列状态', a, i - 1, #self.arrays)
         self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
     end
     self:pause()
     self:check()
     self:scanBees()
     for _, a in ipairs(self.arrays) do
-        for _, n in ipairs(a.nodes) do
+        for i, n in ipairs(a.nodes) do
+            self:startup('初始化传送节点', a, i - 1, #a.nodes)
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
             node.setMinParallel(1)
         end
+        self:startup('初始化传送节点', a, #a.nodes, #a.nodes)
     end
     if self.storage.getFieldStrength() ~= self.cfg.fieldLimit then
         self.storage.setFieldStrength(self.cfg.fieldLimit)
@@ -1053,7 +1121,10 @@ function E:resources(force)
                     coroutine.yield(false)
                 end
             end
-            for _, a in ipairs(self.arrays) do
+            for i, a in ipairs(self.arrays) do
+                if not self.reserved then
+                    self:startup('核对凝聚物库存', a, i - 1, #self.arrays)
+                end
                 local remaining = self:remaining(self.s.arrays[a.address], visit)
                 self.U.add(reserved, remaining)
             end
@@ -1175,7 +1246,8 @@ end
 -- A slot is reserved only while its cell is physically in an ME-IO port.
 function E:scanBees()
     local pending, holes = {}, {}
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('读取阵列蜂群', a, i - 1, #self.arrays)
         local s = { done = 0, counts = {} }
         self.s.arrays[a.address] = s
         local tier, count
@@ -1194,7 +1266,14 @@ function E:scanBees()
         if not self.charge[a.beePool] then
             local charge, missing = {}, {}
             self.charge[a.beePool], holes[a.beePool] = charge, missing
-            for _, c in ipairs(self.pools[a.beePool].cells) do
+            local cells = self.pools[a.beePool].cells
+            for index, c in ipairs(cells) do
+                self:startup(
+                    '盘点蜂群元件',
+                    a.beePool .. ' · 箱子 ' .. c.box .. ' / 槽位 ' .. c.slot,
+                    index - 1,
+                    #cells
+                )
                 local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
                 if stack then
                     charge[cellKey(c)] = stack.storedItemCount
@@ -1234,6 +1313,7 @@ function E:resolvePorts()
     local ports = self.ports
     for i = ports.index, #ports.pending do
         local task = ports.pending[i]
+        self:startup('辨认在途蜂群', task.a, i - 1, #ports.pending)
         local missing = ports.holes[task.a.beePool]
         local tier = task.tier or (missing[1] and missing[1].tier)
         if not task.tier then
@@ -1680,7 +1760,8 @@ local singularUnit = {
 function E:recover(a, s)
     local workers, total, running, unit, steps, parallel =
         {}, 0, self.wasEnabled[a.address], nil, nil, 0
-    for _, conf in ipairs(a.nodes) do
+    for i, conf in ipairs(a.nodes) do
+        self:startup('接管节点任务', a, i - 1, #a.nodes)
         local n = self.io.proxy(conf.address)
         if n.hasWork() then
             local count = n.getParallelRecipesInProgress()
@@ -1702,6 +1783,7 @@ function E:recover(a, s)
                 or self.U.total(n.getConsumedCondensate() or {}) > 0
         end
     end
+    self:startup('接管节点任务', a, #a.nodes, #a.nodes)
     if total == 0 then
         return
     end
@@ -2032,6 +2114,7 @@ function E:tick()
         end
         for _, a in ipairs(self.arrays) do
             if not self:hold(a) then
+                self:startup('等待阵列停止', a)
                 return
             end
         end
@@ -2985,7 +3068,11 @@ function F:act(action, button)
                     self:placeFeedCell(feed, cell)
                 end
             end
-            self.ui.C.validate(self.cfg, self.component, self.save.U)
+            local progress = self.save.progress and self.save.progress()
+            self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
+            if progress then
+                progress('保存配置', '正在保存设备配置')
+            end
             self.save.write(self.cfg)
         end)
         if ok then
@@ -3949,6 +4036,33 @@ end
 function G:edit(cfg, component, save)
     return self.Editor.new(self, cfg, component, save):run()
 end
+
+function G:startup(status)
+    self.starting = true
+    self:begin('BEC / 请稍候')
+    local width = math.min(100, self.w - 8)
+    local x = math.floor((self.w - width) / 2) + 1
+    local top = math.floor((self.h - 12) / 2)
+    self:frame(x, top, width, top + 11)
+    self:put(x + 3, top + 2, status.stage, width - 6, ink.cyan)
+    local detail = type(status.detail) == 'table'
+            and self:recordName(status.cfg, 'arrays', status.detail)
+        or status.detail
+    self:wrap(x + 3, top + 4, detail or '', width - 6, 2, ink.text)
+    if status.total and status.total > 0 then
+        self:bar(x + 3, top + 7, width - 20, status.done / status.total)
+        self:put(x + width - 15, top + 7, status.done .. ' / ' .. status.total, 12, ink.cyan)
+    end
+    self:put(
+        x + 3,
+        top + 9,
+        string.format('已用时 %.0f 秒', status.elapsed or 0),
+        width - 6,
+        ink.dim
+    )
+    self:paint()
+end
+
 local phases = {
     admit = '节点取料',
     collect = '收集算力奇点',
@@ -4026,6 +4140,11 @@ function G:beeWait(e, a)
 end
 
 function G:runtime(e, refill)
+    if e.loading then
+        self:startup(e.loading)
+        return
+    end
+    self.starting = nil
     self:begin('BEC / 多观测阵列')
     local w, h = self.w, self.h
     local actions = {
@@ -4481,6 +4600,9 @@ function G:runtimeEvent(name, _, ch, code, direction)
     end
     if action == 'setup' or action == 'quit' or action == 'interrupt' then
         return action
+    end
+    if self.starting then
+        return
     end
     if action:match('^tab:') then
         self.tab = tonumber(action:sub(5))
@@ -5019,6 +5141,7 @@ function R.new(engine)
         retry = {},
     }, R)
     local e = engine
+    local progress = e.io.startup
     self.s = { feeds = {}, generators = {}, active = {} }
     e.s.refill = self.s
     self.draining = true
@@ -5030,11 +5153,17 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
+        if progress then
+            progress('检查预缓存设备', '主网流体转运 ME-IO 端口')
+        end
         local state = { pending = {} }
         self.s.feeds[f.id] = state
         self.retry[f.id] = {}
         assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口应有 12 个槽')
         for i, c in ipairs(f.cells) do
+            if progress then
+                progress('盘点预缓存元件', e.M.name(c.material), i - 1, #f.cells)
+            end
             local stack = e.log:stack(c.inventory, c.slot)
             if stack then
                 self:cell(c, stack)
@@ -5045,6 +5174,9 @@ function R.new(engine)
                 )
                 state.loading = { index = i, phase = 'io' }
             end
+        end
+        if progress then
+            progress('盘点预缓存元件', '预缓存元件检查完成', #f.cells, #f.cells)
         end
     end
     return self

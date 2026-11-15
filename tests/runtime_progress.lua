@@ -34,6 +34,42 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
         end,
     }
     local ui = G.new(gpu, {}, unicode, C, M)
+    local startup = {
+        stage = '初始化传送节点',
+        detail = '观测阵列 2',
+        done = 8,
+        total = 16,
+        elapsed = 12,
+    }
+    startup.cfg = { arrays = { { address = 'first' }, { address = 'second' } } }
+    startup.detail = startup.cfg.arrays[2]
+    ui:startup(startup)
+    assert(ui:runtimeEvent('key_down', nil, 91, 201) == nil)
+    assert(ui:runtimeEvent('key_down', nil, 115, 31) == 'setup')
+    assert(ui:runtimeEvent('key_down', nil, 113, 16) == 'quit')
+    assert(ui:runtimeEvent('interrupted') == 'interrupt')
+    local shown = {}
+    for _, row in ipairs(ui.rows) do
+        for _, span in ipairs(row) do
+            shown[#shown + 1] = span[2]
+        end
+    end
+    assert(table.concat(shown):find('8 / 16', 1, true) and #ui.hits == 0)
+    assert(table.concat(shown):find('观测阵列 2', 1, true))
+    writes = {}
+    ui:startup(startup)
+    assert(#writes == 0, 'unchanged startup progress must not redraw')
+    startup.done, startup.elapsed = 12, 13
+    ui:startup(startup)
+    assert(#writes > 0 and #writes < 20, 'startup changes should only repaint affected lines')
+    startup.stage, startup.detail, startup.total =
+        '等待约束场', '等待当前周期结束', nil
+    ui:startup(startup)
+    for _, row in ipairs(ui.rows) do
+        for _, span in ipairs(row) do
+            assert(not span[2]:find('12 / 16', 1, true), 'wait stages must not retain old progress')
+        end
+    end
     local f = dofile(ROOT .. 'tests/gui_fixture.lua')
     local e, r = f.engine, f.refill
     local a = e.arrays[2]
@@ -49,6 +85,7 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
         ui.tab, ui.nodeOnly = 2, true
     end
     ui:runtime(e, r)
+    assert(not ui.starting)
     local function text()
         local spans = {}
         for _, row in ipairs(ui.rows) do

@@ -58,6 +58,21 @@ local function compatible(cfg, state)
     return Recovery.check(cfg, state, U, component.proxy)
 end
 
+local function startupProgress()
+    local status = { since = computer.realTime() }
+    local lastStage, lastDraw
+    local function progress(stage, detail, done, total)
+        local now = computer.realTime()
+        status.stage, status.detail, status.done, status.total = stage, detail, done, total
+        status.elapsed = now - status.since
+        if stage ~= lastStage or now - lastDraw >= 0.25 or total and done == total then
+            screen():startup(status)
+            lastStage, lastDraw = stage, now
+        end
+    end
+    return progress, status
+end
+
 local function configure()
     local readable, cfg = pcall(function()
         return C.defaults(store.read('multi.setup') or store.read('multi.cfg'))
@@ -72,6 +87,7 @@ local function configure()
     end
     local result = screen():edit(cfg, component, {
         U = U,
+        progress = startupProgress,
         clearRecipes = function()
             Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
             return store.clearRecipes()
@@ -99,12 +115,21 @@ if command == 'setup' then
 end
 local ok, err = xpcall(function()
     repeat
+        local progress, loading
+        if command ~= 'check' then
+            progress, loading = startupProgress()
+            progress('读取配置', '正在读取设备配置')
+        end
         local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
-        C.validate(cfg, component, U)
+        C.validate(cfg, component, U, progress)
+        if progress then
+            progress('读取配方缓存', '正在读取已学习的配方')
+        end
         local state = store.read('multi.state') or {}
         engine = Core.new(cfg, state, {
             proxy = component.proxy,
             time = computer.uptime,
+            startup = progress,
             save = function(s)
                 store.write('multi.state', s)
             end,
@@ -128,8 +153,11 @@ local ok, err = xpcall(function()
             return
         end
         command = 'run'
+        loading.cfg = cfg
+        engine.loading = loading
         engine:start()
         local refill = Refill.new(engine)
+        progress('等待约束场', '等待约束场完成当前周期')
         local lastDraw
         local editing = false
         local stopping = false
@@ -158,6 +186,13 @@ local ok, err = xpcall(function()
         end
         local function draw()
             local now = computer.realTime()
+            if engine.loading then
+                engine.loading.elapsed = now - loading.since
+                if engine.recovered and engine.reserved then
+                    engine.loading, engine.io.startup = nil, nil
+                    lastDraw = -math.huge
+                end
+            end
             if now - lastDraw >= 1 then
                 screen():runtime(engine, refill)
                 lastDraw = now

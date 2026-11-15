@@ -293,6 +293,33 @@ end
 function G:edit(cfg, component, save)
     return self.Editor.new(self, cfg, component, save):run()
 end
+
+function G:startup(status)
+    self.starting = true
+    self:begin('BEC / 请稍候')
+    local width = math.min(100, self.w - 8)
+    local x = math.floor((self.w - width) / 2) + 1
+    local top = math.floor((self.h - 12) / 2)
+    self:frame(x, top, width, top + 11)
+    self:put(x + 3, top + 2, status.stage, width - 6, ink.cyan)
+    local detail = type(status.detail) == 'table'
+            and self:recordName(status.cfg, 'arrays', status.detail)
+        or status.detail
+    self:wrap(x + 3, top + 4, detail or '', width - 6, 2, ink.text)
+    if status.total and status.total > 0 then
+        self:bar(x + 3, top + 7, width - 20, status.done / status.total)
+        self:put(x + width - 15, top + 7, status.done .. ' / ' .. status.total, 12, ink.cyan)
+    end
+    self:put(
+        x + 3,
+        top + 9,
+        string.format('已用时 %.0f 秒', status.elapsed or 0),
+        width - 6,
+        ink.dim
+    )
+    self:paint()
+end
+
 local phases = {
     admit = '节点取料',
     collect = '收集算力奇点',
@@ -370,6 +397,11 @@ function G:beeWait(e, a)
 end
 
 function G:runtime(e, refill)
+    if e.loading then
+        self:startup(e.loading)
+        return
+    end
+    self.starting = nil
     self:begin('BEC / 多观测阵列')
     local w, h = self.w, self.h
     local actions = {
@@ -825,6 +857,9 @@ function G:runtimeEvent(name, _, ch, code, direction)
     end
     if action == 'setup' or action == 'quit' or action == 'interrupt' then
         return action
+    end
+    if self.starting then
+        return
     end
     if action:match('^tab:') then
         self.tab = tonumber(action:sub(5))

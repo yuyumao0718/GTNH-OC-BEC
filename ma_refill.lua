@@ -12,6 +12,7 @@ function R.new(engine)
         retry = {},
     }, R)
     local e = engine
+    local progress = e.io.startup
     self.s = { feeds = {}, generators = {}, active = {} }
     e.s.refill = self.s
     self.draining = true
@@ -23,11 +24,17 @@ function R.new(engine)
         self.bands[b.material] = b
     end
     for _, f in ipairs(e.cfg.feeds) do
+        if progress then
+            progress('检查预缓存设备', '主网流体转运 ME-IO 端口')
+        end
         local state = { pending = {} }
         self.s.feeds[f.id] = state
         self.retry[f.id] = {}
         assert(e.log:size(f.io) == 12, '主网流体转运 ME-IO 端口应有 12 个槽')
         for i, c in ipairs(f.cells) do
+            if progress then
+                progress('盘点预缓存元件', e.M.name(c.material), i - 1, #f.cells)
+            end
             local stack = e.log:stack(c.inventory, c.slot)
             if stack then
                 self:cell(c, stack)
@@ -38,6 +45,9 @@ function R.new(engine)
                 )
                 state.loading = { index = i, phase = 'io' }
             end
+        end
+        if progress then
+            progress('盘点预缓存元件', '预缓存元件检查完成', #f.cells, #f.cells)
         end
     end
     return self

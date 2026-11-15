@@ -100,6 +100,12 @@ function E:items(address)
     return counts
 end
 
+function E:startup(stage, detail, done, total)
+    if self.io.startup then
+        self.io.startup(stage, detail, done, total)
+    end
+end
+
 function E:stockRead(refresh)
     if refresh or self.stockAt ~= self.now then
         self.stock = self.storage.getStoredCondensate()
@@ -173,7 +179,8 @@ function E:pause()
     self.resourceScan = nil
     pcall(self.subscribe, self, false)
     pcall(self.gate, self, self.cfg.channels[1], true)
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('暂停节点取料', a, i - 1, #self.arrays)
         pcall(self.hold, self, a)
         for _, n in ipairs(a.nodes) do
             pcall(function()
@@ -192,11 +199,13 @@ function E:catalogsRead()
         for index, source in ipairs(c.patterns) do
             local p = self.io.proxy(source.address)
             for slot = 1, source.slots do
+                self:startup('读取处理样板', '样板接口 ' .. index, slot - 1, source.slots)
                 local v = p.getInterfacePattern(slot)
                 if v then
                     patterns[index .. ':' .. slot] = v
                 end
             end
+            self:startup('读取处理样板', '样板接口 ' .. index, source.slots, source.slots)
         end
         self.catalogs[c.id] = self.I.catalog(patterns)
     end
@@ -208,7 +217,8 @@ function E:check()
         '公共原料子网 ME 控制器不支持物品变化事件，请检查 OC 版本'
     )
     self:catalogsRead()
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('检查观测阵列', a, i - 1, #self.arrays)
         local d = self.io.proxy(a.diode)
         assert(d.hasWork() and d.isWorkAllowed(), '请先启动麦克斯韦门：' .. a.address)
         for _, id in ipairs({ a.loadPort, a.unloadPort }) do
@@ -218,6 +228,7 @@ function E:check()
             )
         end
     end
+    self:startup('检查约束场', '检查运行状态与凝聚物库存')
     assert(
         self.storage.hasWork() and self.storage.isWorkAllowed(),
         '请先启动约束场并持续供电'
@@ -231,18 +242,21 @@ end
 
 function E:start()
     self.wasEnabled = {}
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('读取阵列状态', a, i - 1, #self.arrays)
         self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
     end
     self:pause()
     self:check()
     self:scanBees()
     for _, a in ipairs(self.arrays) do
-        for _, n in ipairs(a.nodes) do
+        for i, n in ipairs(a.nodes) do
+            self:startup('初始化传送节点', a, i - 1, #a.nodes)
             local node = self.io.proxy(n.address)
             node.setSpeedDivisor(1)
             node.setMinParallel(1)
         end
+        self:startup('初始化传送节点', a, #a.nodes, #a.nodes)
     end
     if self.storage.getFieldStrength() ~= self.cfg.fieldLimit then
         self.storage.setFieldStrength(self.cfg.fieldLimit)
@@ -374,7 +388,10 @@ function E:resources(force)
                     coroutine.yield(false)
                 end
             end
-            for _, a in ipairs(self.arrays) do
+            for i, a in ipairs(self.arrays) do
+                if not self.reserved then
+                    self:startup('核对凝聚物库存', a, i - 1, #self.arrays)
+                end
                 local remaining = self:remaining(self.s.arrays[a.address], visit)
                 self.U.add(reserved, remaining)
             end
@@ -496,7 +513,8 @@ end
 -- A slot is reserved only while its cell is physically in an ME-IO port.
 function E:scanBees()
     local pending, holes = {}, {}
-    for _, a in ipairs(self.arrays) do
+    for i, a in ipairs(self.arrays) do
+        self:startup('读取阵列蜂群', a, i - 1, #self.arrays)
         local s = { done = 0, counts = {} }
         self.s.arrays[a.address] = s
         local tier, count
@@ -515,7 +533,14 @@ function E:scanBees()
         if not self.charge[a.beePool] then
             local charge, missing = {}, {}
             self.charge[a.beePool], holes[a.beePool] = charge, missing
-            for _, c in ipairs(self.pools[a.beePool].cells) do
+            local cells = self.pools[a.beePool].cells
+            for index, c in ipairs(cells) do
+                self:startup(
+                    '盘点蜂群元件',
+                    a.beePool .. ' · 箱子 ' .. c.box .. ' / 槽位 ' .. c.slot,
+                    index - 1,
+                    #cells
+                )
                 local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
                 if stack then
                     charge[cellKey(c)] = stack.storedItemCount
@@ -555,6 +580,7 @@ function E:resolvePorts()
     local ports = self.ports
     for i = ports.index, #ports.pending do
         local task = ports.pending[i]
+        self:startup('辨认在途蜂群', task.a, i - 1, #ports.pending)
         local missing = ports.holes[task.a.beePool]
         local tier = task.tier or (missing[1] and missing[1].tier)
         if not task.tier then
@@ -1001,7 +1027,8 @@ local singularUnit = {
 function E:recover(a, s)
     local workers, total, running, unit, steps, parallel =
         {}, 0, self.wasEnabled[a.address], nil, nil, 0
-    for _, conf in ipairs(a.nodes) do
+    for i, conf in ipairs(a.nodes) do
+        self:startup('接管节点任务', a, i - 1, #a.nodes)
         local n = self.io.proxy(conf.address)
         if n.hasWork() then
             local count = n.getParallelRecipesInProgress()
@@ -1023,6 +1050,7 @@ function E:recover(a, s)
                 or self.U.total(n.getConsumedCondensate() or {}) > 0
         end
     end
+    self:startup('接管节点任务', a, #a.nodes, #a.nodes)
     if total == 0 then
         return
     end
@@ -1353,6 +1381,7 @@ function E:tick()
         end
         for _, a in ipairs(self.arrays) do
             if not self:hold(a) then
+                self:startup('等待阵列停止', a)
                 return
             end
         end

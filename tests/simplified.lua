@@ -539,7 +539,9 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         local queued = {}
         local readsAfterSignal = 0
         local edits = 0
+        local starts = 0
         local drawAt, redrawAt, redrawSeen
+        local loadingAtDraw
         local timedDraws = 0
         local saveErrors = 0
         local errorOutput = {}
@@ -720,8 +722,17 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                 return {
                     new = function()
                         return {
+                            startup = function(_, status)
+                                if status.stage == '读取配置' then
+                                    starts = starts + 1
+                                end
+                            end,
                             runtime = function(_, e)
                                 engine = e
+                                if loadingAtDraw and not e.loading then
+                                    drawAt = nil
+                                end
+                                loadingAtDraw = e.loading ~= nil
                                 if action == 'redraw' or action == 'slow-redraw' then
                                     if redrawAt == w.time then
                                         redrawSeen = true
@@ -780,7 +791,16 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         io.stderr = oldStderr
         assert(ok, err)
         if not check then
-            assert(sent and engine and not next(engine.errors))
+            assert(
+                sent and engine and not next(engine.errors),
+                action .. ': ' .. table.concat(errorOutput)
+            )
+            assert(
+                starts == 1 + edits,
+                'run and returning from settings must show startup progress'
+            )
+        else
+            assert(starts == 0, 'check must remain a command-line operation')
         end
         if check then
             local phrase = action == 'check-pending' and '检查尚未完成' or '检查通过'
