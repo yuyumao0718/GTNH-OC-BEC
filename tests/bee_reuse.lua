@@ -38,7 +38,7 @@ end
 
 for _, fast in ipairs({ false, true }) do
     local w = repeated(fast)
-    assert(w.minimumWrites() == 16)
+    assert(w.minimumWrites() == 0)
     w.finish(10000)
     assert(w.minimumWrites() == 16, 'minimum parallel was rewritten between orders')
     assert(w.moves == 2 and w.state.arrays.a1.reuse)
@@ -46,7 +46,9 @@ for _, fast in ipairs({ false, true }) do
     drain(w)
     assert(w.moves == 4, 'ten same-tier orders should load once and return once')
 end
-print('  PASS ten ordinary/fastTier orders reuse bees and set minimum parallel only at startup')
+print(
+    '  PASS ten ordinary/fastTier orders reuse bees and set minimum parallel only on first intake'
+)
 
 for _, phase in ipairs({ 'idle', 'admit', 'wait', 'run' }) do
     local w = repeated(false)
@@ -79,7 +81,7 @@ for _, phase in ipairs({ 'idle', 'admit', 'wait', 'run' }) do
     w.boot(U.copy(w.saved))
     w.finish(10000)
     assert(w.produced == 160 and w.admitted == 160 and w.moves == 2)
-    assert(w.minimumWrites() == 32, 'restart must initialize minimum parallel again')
+    assert(w.minimumWrites() == 32, 'the new run sets minimum parallel on its first intake')
     drain(w)
 end
 print('  PASS retained bees resume idle, intake, pre-start and running orders without another load')

@@ -131,10 +131,11 @@ print(
     '  PASS clear button requires a separate confirmation, supports cancel, and cannot save through the dialog at three resolutions'
 )
 
--- Exercise the real entrypoint: a later failure must not let the old engine save stale recipes back.
-do
+-- Exercise save and cancel through the real entrypoint. A later failure must
+-- neither repeat validation nor let the old engine save stale recipes back.
+for _, saveConfig in ipairs({ false, true }) do
     local oldRequire, oldDofile, oldStderr = require, dofile, io.stderr
-    local e, edited, emitted, configurationChecks
+    local e, edited, emitted, configurationChecks, starts, configModule
     local files = { ['multi.cfg'] = C.defaults(), ['multi.state'] = U.copy(original) }
     local entryStore = S.new('', {}, {})
     entryStore.read = function(name)
@@ -152,11 +153,16 @@ do
         runtimeEvent = function()
             return 'setup'
         end,
-        edit = function(_, _, _, callbacks)
+        edit = function(_, cfg, _, callbacks)
             assert(callbacks.clearRecipes() == 1)
             edited = true
             assert(not next(files['multi.state'].patterns))
-            return false
+            if saveConfig then
+                cfg.singularityWait = 600
+                configModule.validate(cfg)
+                callbacks.write(cfg)
+            end
+            return saveConfig
         end,
     }
     require = function(name)
@@ -169,6 +175,9 @@ do
         end
         if name == 'filesystem' then
             return {
+                exists = function()
+                    return false
+                end,
                 path = function()
                     return ROOT
                 end,
@@ -220,17 +229,23 @@ do
         end
         if name == 'ma_config.lua' then
             local config = oldDofile(path)
+            configModule = config
             config.validate = function()
                 configurationChecks = (configurationChecks or 0) + 1
-                assert(configurationChecks == 1, '模拟重新启动前失败')
             end
             return config
         end
         if name == 'ma_core.lua' then
             return {
                 new = function(cfg, state, callbacks)
+                    starts = (starts or 0) + 1
+                    if starts == 2 and saveConfig then
+                        assert(cfg.singularityWait == 600)
+                    end
+                    assert(starts == 1, '模拟重新启动前失败')
                     state.refill = { feeds = {} }
                     e = {
+                        cfg = cfg,
                         s = state,
                         io = callbacks,
                         ready = true,
@@ -243,6 +258,7 @@ do
                         callbacks.save(state)
                     end
                     e.start = function() end
+                    e.subscribe = function() end
                     e.event = function() end
                     e.requestStop = function() end
                     e.tick = function() end
@@ -271,8 +287,11 @@ do
     end)
     require, dofile, io.stderr = oldRequire, oldDofile, oldStderr
     assert(ok, err)
-    assert(edited and configurationChecks == 2 and not next(files['multi.state'].patterns))
+    assert(
+        edited
+            and starts == 2
+            and configurationChecks == (saveConfig and 2 or 1)
+            and not next(files['multi.state'].patterns)
+    )
 end
-print(
-    '  PASS clearing from S discards the paused engine so a restart failure cannot restore stale recipes'
-)
+print('  PASS S save/cancel reuses validation and restart failures cannot restore cleared recipes')

@@ -115,7 +115,7 @@ local function configure()
     if not result then
         store.write('multi.setup', cfg)
     end
-    return result
+    return result and cfg or nil
 end
 if command == 'setup' then
     configure()
@@ -123,14 +123,19 @@ if command == 'setup' then
     return
 end
 local ok, err = xpcall(function()
+    local validatedCfg, previousCfg
     repeat
         local progress, loading
         if command ~= 'check' then
             progress, loading = startupProgress()
             progress('读取配置', '正在读取设备配置')
         end
-        local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
-        C.validate(cfg, component, U, progress)
+        local cfg = validatedCfg
+            or C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
+        if not validatedCfg then
+            C.validate(cfg, component, U, progress)
+        end
+        validatedCfg = nil
         if progress then
             progress('读取配方缓存', '正在读取已学习的配方')
         end
@@ -164,7 +169,8 @@ local ok, err = xpcall(function()
         command = 'run'
         loading.cfg = cfg
         engine.loading = loading
-        engine:start()
+        engine:start(previousCfg)
+        previousCfg = nil
         local refill = Refill.new(engine)
         progress('等待约束场', '等待约束场完成当前周期')
         local lastDraw
@@ -245,9 +251,11 @@ local ok, err = xpcall(function()
         if not editing then
             break
         end
-        engine:pause()
+        engine:subscribe(false)
+        engine.save()
+        previousCfg = engine.cfg
         engine = nil
-        configure()
+        validatedCfg = configure() or previousCfg
     until false
 end, debug.traceback)
 local paused, pauseErr = true
@@ -894,19 +902,22 @@ function E:pulse()
     return self.io.pulse and self.io.pulse()
 end
 
-function E:hold(a)
+function E:hold(a, enabled)
     if self.held[a.address] then
         return true
     end
     local p = self.io.proxy(a.address)
-    if p.isWorkAllowed() then
+    if enabled == nil then
+        enabled = p.isWorkAllowed()
+    end
+    if enabled then
         p.setWorkAllowed(false)
     end
     self.held[a.address] = not p.hasWork()
     return self.held[a.address]
 end
 
-function E:pause()
+function E:pause(starting)
     self.gateOutput = nil
     self.held = {}
     self.resourceScan = nil
@@ -914,11 +925,15 @@ function E:pause()
     pcall(self.gate, self, self.cfg.channels[1], true)
     for i, a in ipairs(self.arrays) do
         self:startup('暂停节点取料', a, i - 1, #self.arrays)
-        pcall(self.hold, self, a)
-        for _, n in ipairs(a.nodes) do
-            pcall(function()
-                self.io.proxy(n.address).setWorkAllowed(false)
-            end)
+        if starting and self.idleArrays[a.address] then
+            self.held[a.address] = true
+        else
+            pcall(self.hold, self, a, starting and self.wasEnabled[a.address])
+            for _, n in ipairs(a.nodes) do
+                pcall(function()
+                    self.io.proxy(n.address).setWorkAllowed(false)
+                end)
+            end
         end
     end
     if not self.saveFailed then
@@ -973,24 +988,22 @@ function E:check()
     return true
 end
 
-function E:start()
+function E:start(previousCfg)
+    -- previousCfg is supplied only after S has drained all accepted work and bees.
     self.wasEnabled = {}
+    self.idleArrays = {}
+    local previous = self.U.index(previousCfg and previousCfg.arrays or {}, 'address')
     for i, a in ipairs(self.arrays) do
         self:startup('读取阵列状态', a, i - 1, #self.arrays)
-        self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
+        if self.U.equal(a, previous[a.address]) then
+            self.idleArrays[a.address] = true
+        else
+            self.wasEnabled[a.address] = self.io.proxy(a.address).isWorkAllowed()
+        end
     end
-    self:pause()
+    self:pause(true)
     self:check()
     self:scanBees()
-    for _, a in ipairs(self.arrays) do
-        for i, n in ipairs(a.nodes) do
-            self:startup('初始化传送节点', a, i - 1, #a.nodes)
-            local node = self.io.proxy(n.address)
-            node.setSpeedDivisor(1)
-            node.setMinParallel(1)
-        end
-        self:startup('初始化传送节点', a, #a.nodes, #a.nodes)
-    end
     if self.storage.getFieldStrength() ~= self.cfg.fieldLimit then
         self.storage.setFieldStrength(self.cfg.fieldLimit)
     end
@@ -1245,24 +1258,11 @@ end
 
 -- A slot is reserved only while its cell is physically in an ME-IO port.
 function E:scanBees()
-    local pending, holes = {}, {}
+    local pending, holes, occupied = {}, {}, {}
     for i, a in ipairs(self.arrays) do
         self:startup('读取阵列蜂群', a, i - 1, #self.arrays)
         local s = { done = 0, counts = {} }
         self.s.arrays[a.address] = s
-        local tier, count
-        -- Startup must distinguish an empty array from an unreadable first node.
-        for _ = 1, #a.nodes do
-            tier, count = self:readBees(a)
-            if tier then
-                break
-            end
-        end
-        self.beeProbes[a.address] = nil
-        self.provided[a.address] = tier
-        if tier then
-            s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
-        end
         if not self.charge[a.beePool] then
             local charge, missing = {}, {}
             self.charge[a.beePool], holes[a.beePool] = charge, missing
@@ -1275,12 +1275,31 @@ function E:scanBees()
                     #cells
                 )
                 local stack = self.log:stack(self:beeAccess(a, c).inventory, c.slot)
+                if not stack or stack.storedItemCount == 0 then
+                    occupied[a.beePool] = true
+                end
                 if stack then
                     charge[cellKey(c)] = stack.storedItemCount
                 else
                     missing[#missing + 1] = c
                 end
             end
+        end
+        local tier, count
+        -- Charged cells at home mean no array is using this pool. Search only
+        -- when a set is loaded or in transit, and never for a just-drained array.
+        if occupied[a.beePool] and not (self.idleArrays and self.idleArrays[a.address]) then
+            for _ = 1, #a.nodes do
+                tier, count = self:readBees(a)
+                if tier then
+                    break
+                end
+            end
+        end
+        self.beeProbes[a.address] = nil
+        self.provided[a.address] = tier
+        if tier then
+            s.lease, s.counts[tier], s.reuse = { [tier] = true }, count, true
         end
         for _, port in ipairs({ a.loadPort, a.unloadPort }) do
             local input = self.log:stack(port, 1)
@@ -1895,7 +1914,11 @@ function E:array(a)
             local deadline = self.processing and self.io.time() + 0.15
             for index, w in ipairs(pending) do
                 if self.maxParallel[w.address] ~= w.count then
-                    self.io.proxy(w.address).setMaxParallel(w.count)
+                    local node = self.io.proxy(w.address)
+                    if not self.maxParallel[w.address] then
+                        node.setMinParallel(1)
+                    end
+                    node.setMaxParallel(w.count)
                     self.maxParallel[w.address] = w.count
                     if self:pulse() then
                         return
@@ -2119,8 +2142,11 @@ function E:tick()
             end
         end
         for _, a in ipairs(self.arrays) do
-            self:recover(a, self.s.arrays[a.address])
+            if not self.idleArrays[a.address] then
+                self:recover(a, self.s.arrays[a.address])
+            end
         end
+        self.idleArrays = nil
         self.recovered = true
     end
     if not self:resources() and not self.reserved then

@@ -417,7 +417,7 @@ local function world(arrayCount, orders, options)
         end
         w.lastInput = input
     end
-    function w.boot(state)
+    function w.boot(state, previousCfg)
         w.state = state or {}
         w.e = Core.new(cfg, w.state, {
             proxy = function(a)
@@ -434,7 +434,7 @@ local function world(arrayCount, orders, options)
                 end
             end,
         }, mods)
-        w.e:start()
+        w.e:start(previousCfg)
         w.r = R.new(w.e)
     end
     function w.tick()

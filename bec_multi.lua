@@ -106,7 +106,7 @@ local function configure()
     if not result then
         store.write('multi.setup', cfg)
     end
-    return result
+    return result and cfg or nil
 end
 if command == 'setup' then
     configure()
@@ -114,14 +114,19 @@ if command == 'setup' then
     return
 end
 local ok, err = xpcall(function()
+    local validatedCfg, previousCfg
     repeat
         local progress, loading
         if command ~= 'check' then
             progress, loading = startupProgress()
             progress('读取配置', '正在读取设备配置')
         end
-        local cfg = C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
-        C.validate(cfg, component, U, progress)
+        local cfg = validatedCfg
+            or C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
+        if not validatedCfg then
+            C.validate(cfg, component, U, progress)
+        end
+        validatedCfg = nil
         if progress then
             progress('读取配方缓存', '正在读取已学习的配方')
         end
@@ -155,7 +160,8 @@ local ok, err = xpcall(function()
         command = 'run'
         loading.cfg = cfg
         engine.loading = loading
-        engine:start()
+        engine:start(previousCfg)
+        previousCfg = nil
         local refill = Refill.new(engine)
         progress('等待约束场', '等待约束场完成当前周期')
         local lastDraw
@@ -236,9 +242,11 @@ local ok, err = xpcall(function()
         if not editing then
             break
         end
-        engine:pause()
+        engine:subscribe(false)
+        engine.save()
+        previousCfg = engine.cfg
         engine = nil
-        configure()
+        validatedCfg = configure() or previousCfg
     until false
 end, debug.traceback)
 local paused, pauseErr = true

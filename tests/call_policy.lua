@@ -118,7 +118,7 @@ do
         w.e:array(a)
     end
     for _, c in pairs(calls) do
-        assert(not c.setMinParallel and c.setMaxParallel == 1 and c.setWorkAllowed == 1)
+        assert(c.setMinParallel == 1 and c.setMaxParallel == 1 and c.setWorkAllowed == 1)
     end
     w.advance()
     local delayed = w.components[a.nodes[2].address]
