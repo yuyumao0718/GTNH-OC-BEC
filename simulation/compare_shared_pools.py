@@ -14,7 +14,7 @@ POOLS = {49: [6] * 7 + [3, 3, 1], 54: [6] * 7 + [4, 4, 4]}
 def simulate(job):
     from lupa.lua53 import LuaRuntime
 
-    arrays, cells, scenario = job
+    arrays, cells, scenario, early_start = job
     order, gap = ('reverse', 0) if scenario == 'reverse' else ('name', 60 if scenario == 'upstream60' else 0)
     vm = LuaRuntime(unpack_returned_tuples=True)
     vm.globals().ROOT = ROOT.as_posix() + '/'
@@ -22,7 +22,7 @@ def simulate(job):
     if order == 'reverse':
         case['recipes'].reverse()
     bench = vm.execute("return dofile(ROOT .. 'simulation/stargate_shared_pool.lua')")
-    options = dict(arrays=arrays, pool=POOLS[cells], syncSeconds=0.05, supplyGap=gap)
+    options = dict(arrays=arrays, pool=POOLS[cells], syncSeconds=0.05, supplyGap=gap, earlyStart=early_start)
     run = bench.run(vm.table_from(case, recursive=True), vm.table_from(options, recursive=True))
     assert run.cellCount == cells and run.totalCrafts == 26521811 and run.completedRecipes == 69
     assert run.singularityBatches >= 1
@@ -37,8 +37,34 @@ def simulate(job):
                                   start=round(run.jobs[key].arrival - arrivals[0], 2),
                                   finish=round(run.jobs[key].finish - arrivals[0], 2))
                        for key in ('StargateMaterialMesh', 'StargateFramePart', 'astralArrayFabricator')}
-    print(f"{arrays} arrays, {cells} cells, {scenario}: {run.seconds:.2f}s", flush=True)
+    row.update(early_start=early_start, early_batches=run.earlyStarts, fast_batches=run.fastBatches)
+    print(f"{arrays} arrays, {cells} cells, {scenario}, early={early_start}: {run.seconds:.2f}s, {run.earlyStarts} switched", flush=True)
     return row
+
+
+def check_early_start():
+    """Keep T2 busy while another array receives a short T1, then T2 recipe."""
+    from lupa.lua53 import LuaRuntime
+
+    recipes = [
+        dict(id='hold-T2', count=1, dependencies=[], unit={'entangled_neutronium': 1},
+             steps=[dict(start=0, finish=30720000, tier=2)]),
+        dict(id='T1-then-T2', count=1, dependencies=[], unit={'entangled_neutronium': 1},
+             steps=[dict(start=0, finish=40, tier=1), dict(start=40, finish=80, tier=2)]),
+    ]
+    vm = LuaRuntime(unpack_returned_tuples=True)
+    vm.globals().ROOT = ROOT.as_posix() + '/'
+    bench = vm.execute("return dofile(ROOT .. 'simulation/stargate_shared_pool.lua')")
+    starts = []
+    for early in (False, True):
+        opt = dict(arrays=2, pool=[1, 1] + [0] * 8, syncSeconds=0.05, supplyGap=3, earlyStart=early)
+        run = bench.run(vm.table_from({'recipes': recipes}, recursive=True), vm.table_from(opt, recursive=True))
+        job = run.jobs['T1-then-T2']
+        assert run.totalCrafts == 2 and run.earlyStarts == int(early)
+        assert job.firstTier == (1 if early else 2)
+        starts.append(job.firstProgress - job.arrival)
+    assert starts[1] < starts[0]
+    print(f'Positive control: time from arrival to first progress {starts[0]:.2f}s -> {starts[1]:.2f}s', flush=True)
 
 
 if __name__ == '__main__':
@@ -48,10 +74,13 @@ if __name__ == '__main__':
     parser.add_argument('--scenario', nargs='+', choices=['name', 'reverse', 'upstream60'],
                         default=['name', 'reverse', 'upstream60'])
     parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--compare-early', action='store_true')
     args = parser.parse_args()
-    jobs = itertools.product(args.arrays, POOLS, args.scenario)
+    if args.compare_early:
+        check_early_start()
+    jobs = itertools.product(args.arrays, POOLS, args.scenario, (False, True) if args.compare_early else (False,))
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         rows = list(pool.map(simulate, jobs))
-    out = HERE / 'shared-pool-results.json'
+    out = HERE / ('early-start-results.json' if args.compare_early else 'shared-pool-results.json')
     out.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
     print(out)

@@ -6,6 +6,7 @@ root = Path(__file__).resolve().parents[1]
 programs = sorted(root.glob('*.lua'))
 files = programs + [root / '使用说明.md', root / '测试说明.md', root / '配置界面与加工逻辑实施方案.md', root / 'serve-local.cmd']
 files += [root / '取料与切换响应精简方案.md', root / 'simulation/取料与切换响应验证.md', root / 'simulation/现场续做测试记录.md']
+files += [root / 'simulation/星门提前开工对照.md', root / 'simulation/early-start-results.json']
 files += sorted((root / 'wiki').glob('*.html')) + sorted((root / 'wiki').glob('*.png'))
 files += sorted((root / 'examples').glob('*.lua'))
 installer = root / 'install' / 'multi_install.lua'

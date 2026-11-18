@@ -88,6 +88,67 @@ if benchmark then
 end
 print('  PASS six, ten and thirty arrays finish with bounded resource scans and whole-array intake')
 
+for _, count in ipairs({ 6, 10, 30 }) do
+    local w = world(count, true)
+    for _ = 1, 1000 do
+        w.tick()
+        local allRunning = true
+        for _, s in pairs(w.state.arrays) do
+            allRunning = allRunning and s.batch and s.batch.fixed and s.batch.phase == 'run'
+        end
+        if allRunning then
+            break
+        end
+    end
+    local calls, progress = 0, 0
+    for address in pairs(w.nodes) do
+        local p = w.components[address]
+        local work, read = p.hasWork, p.getWorkProgress
+        p.hasWork = function()
+            calls = calls + 1
+            return work()
+        end
+        p.getWorkProgress = function()
+            progress = progress + 1
+            return read()
+        end
+    end
+    local function scan(expected)
+        calls = 0
+        for _, a in ipairs(w.cfg.arrays) do
+            local b = w.state.arrays[a.address].batch
+            assert(b.phase == 'run' and b.fixed and #b.workers == 16)
+            w.e:array(a)
+        end
+        assert(calls == expected and progress == 0)
+    end
+    scan(count)
+    -- Node 2 finishes out of order. Node 16 remains busy after nodes 1..15 finish.
+    for _, a in ipairs(w.cfg.arrays) do
+        w.nodes[a.nodes[2].address].progress = 799
+    end
+    w.advance()
+    scan(count)
+    for _, a in ipairs(w.cfg.arrays) do
+        for i = 1, 15 do
+            w.nodes[a.nodes[i].address].progress = 799
+        end
+    end
+    w.advance()
+    scan(16 * count)
+    scan(count)
+    for _, a in ipairs(w.cfg.arrays) do
+        assert(w.state.arrays[a.address].batch.phase == 'run' and w.arrays[a.address].bees > 0)
+        assert(not w.e.observations[a.address][1] and w.e.observations[a.address][16].fast)
+    end
+    w.e:pause()
+    w.boot(w.saved)
+    w.finish(5000)
+    assert(w.admitted == count * 800 and w.produced == w.admitted)
+    w.assertPool()
+    print('  PASS fastTier: ' .. count .. ' steady reads, staggered finishes and sparse restart')
+end
+
 do
     local w = world(6, false)
     local saved

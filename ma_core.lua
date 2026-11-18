@@ -1124,6 +1124,29 @@ function E:recover(a, s)
     end
 end
 
+-- A fixed tier stays installed until every worker is confirmed idle.
+function E:fastComplete(a, b)
+    local views = self.observations[a.address]
+    if not b.fastIndex then
+        views = {}
+        for i, w in ipairs(b.workers) do
+            views[i] = { address = w.address, parallel = w.count, tier = b.fixed, fast = true }
+        end
+        self.observations[a.address] = views
+        b.fastIndex = 1
+    end
+    while b.fastIndex <= #b.workers do
+        local w = b.workers[b.fastIndex]
+        if self.io.proxy(w.address).hasWork() then
+            return false
+        end
+        self:worker(w).done = true
+        views[b.fastIndex] = nil
+        b.fastIndex = b.fastIndex + 1
+    end
+    return true
+end
+
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
@@ -1244,19 +1267,21 @@ function E:array(a)
             end
         end
         local now = self.io.time()
-        if b.fixed or not b.nextScan or now >= b.nextScan then
-            if not b.fixed then
-                b.nextScan = now + 0.25
-            end
+        local complete
+        if b.fixed then
+            b.targetTier = b.fixed
+            complete = self:fastComplete(a, b)
+        elseif not b.nextScan or now >= b.nextScan then
+            b.nextScan = now + 0.25
             local workers = {}
             local views = {}
             for index, w in ipairs(b.workers) do
                 local n = self.io.proxy(w.address)
                 local cached = self:worker(w)
                 if not cached.done and n.hasWork() then
-                    local progress = b.fixed and 0 or n.getWorkProgress()
-                    local tier = b.fixed or self.N.requested(meta.steps, progress)
-                    if b.fixed or n.hasWork() then
+                    local progress = n.getWorkProgress()
+                    local tier = self.N.requested(meta.steps, progress)
+                    if n.hasWork() then
                         workers[#workers + 1] =
                             { progress = progress, tier = tier, address = w.address }
                         views[index] = {
@@ -1265,7 +1290,6 @@ function E:array(a)
                             tier = tier,
                             parallel = w.count,
                             length = meta.steps[#meta.steps].finish,
-                            fast = b.fixed ~= nil,
                         }
                     else
                         cached.done = true
@@ -1275,20 +1299,21 @@ function E:array(a)
                 end
             end
             self.observations[a.address] = views
-            if #workers == 0 then
-                if not self:hold(a) then
-                    return
-                end
-                self:filters(a, {})
-                b.phase = 'return'
-                self.resourcesAt = nil
-                return
-            end
+            complete = #workers == 0
             local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
             if ref then
                 b.reference = ref.progress
-                b.targetTier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
+                b.targetTier = self.N.tier(ref.tier, self:beeCells(a))
             end
+        end
+        if complete then
+            if not self:hold(a) then
+                return
+            end
+            self:filters(a, {})
+            b.phase = 'return'
+            self.resourcesAt = nil
+            return
         end
         if b.targetTier and self:bees(a, s, b.targetTier) and self.held[a.address] then
             self:filters(a, meta.unit)

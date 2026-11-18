@@ -1865,6 +1865,29 @@ function E:recover(a, s)
     end
 end
 
+-- A fixed tier stays installed until every worker is confirmed idle.
+function E:fastComplete(a, b)
+    local views = self.observations[a.address]
+    if not b.fastIndex then
+        views = {}
+        for i, w in ipairs(b.workers) do
+            views[i] = { address = w.address, parallel = w.count, tier = b.fixed, fast = true }
+        end
+        self.observations[a.address] = views
+        b.fastIndex = 1
+    end
+    while b.fastIndex <= #b.workers do
+        local w = b.workers[b.fastIndex]
+        if self.io.proxy(w.address).hasWork() then
+            return false
+        end
+        self:worker(w).done = true
+        views[b.fastIndex] = nil
+        b.fastIndex = b.fastIndex + 1
+    end
+    return true
+end
+
 function E:array(a)
     local s = self.s.arrays[a.address]
     local b = s.batch
@@ -1985,19 +2008,21 @@ function E:array(a)
             end
         end
         local now = self.io.time()
-        if b.fixed or not b.nextScan or now >= b.nextScan then
-            if not b.fixed then
-                b.nextScan = now + 0.25
-            end
+        local complete
+        if b.fixed then
+            b.targetTier = b.fixed
+            complete = self:fastComplete(a, b)
+        elseif not b.nextScan or now >= b.nextScan then
+            b.nextScan = now + 0.25
             local workers = {}
             local views = {}
             for index, w in ipairs(b.workers) do
                 local n = self.io.proxy(w.address)
                 local cached = self:worker(w)
                 if not cached.done and n.hasWork() then
-                    local progress = b.fixed and 0 or n.getWorkProgress()
-                    local tier = b.fixed or self.N.requested(meta.steps, progress)
-                    if b.fixed or n.hasWork() then
+                    local progress = n.getWorkProgress()
+                    local tier = self.N.requested(meta.steps, progress)
+                    if n.hasWork() then
                         workers[#workers + 1] =
                             { progress = progress, tier = tier, address = w.address }
                         views[index] = {
@@ -2006,7 +2031,6 @@ function E:array(a)
                             tier = tier,
                             parallel = w.count,
                             length = meta.steps[#meta.steps].finish,
-                            fast = b.fixed ~= nil,
                         }
                     else
                         cached.done = true
@@ -2016,20 +2040,21 @@ function E:array(a)
                 end
             end
             self.observations[a.address] = views
-            if #workers == 0 then
-                if not self:hold(a) then
-                    return
-                end
-                self:filters(a, {})
-                b.phase = 'return'
-                self.resourcesAt = nil
-                return
-            end
+            complete = #workers == 0
             local ref = self.N.choose(workers, b.reference, meta.steps[#meta.steps].finish)
             if ref then
                 b.reference = ref.progress
-                b.targetTier = b.fixed or self.N.tier(ref.tier, self:beeCells(a))
+                b.targetTier = self.N.tier(ref.tier, self:beeCells(a))
             end
+        end
+        if complete then
+            if not self:hold(a) then
+                return
+            end
+            self:filters(a, {})
+            b.phase = 'return'
+            self.resourcesAt = nil
+            return
         end
         if b.targetTier and self:bees(a, s, b.targetTier) and self.held[a.address] then
             self:filters(a, meta.unit)
@@ -3376,7 +3401,7 @@ function F:drawBox(o, x, width)
         local slot = first + i
         local xx = x + (i % 9) * cw
         local yy = 8 + math.floor(i / 9) * 3
-        ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw)
+        ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw, 2)
         if not self.selected[slot] then
             ui:put(
                 xx,
@@ -3859,7 +3884,7 @@ function G:button(id, x, y, label, selected, width)
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
 
-function G:control(id, x, y, label, selected, width)
+function G:control(id, x, y, label, selected, width, hitHeight)
     local text = self:clip(label, width or self.w - x + 1)
     local n = width or self.u.wlen(text)
     self:put(
@@ -3870,12 +3895,12 @@ function G:control(id, x, y, label, selected, width)
         selected and ink.bg or ink.cyan,
         selected and ink.cyan or ink.panel
     )
-    self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
+    self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n, h = hitHeight }
 end
 
 function G:hit(x, y)
     for _, h in ipairs(self.hits) do
-        if y == h.y and x >= h.x and x < h.x + h.w then
+        if y >= h.y and y < h.y + (h.h or 1) and x >= h.x and x < h.x + h.w then
             return h.id
         end
     end
@@ -5108,10 +5133,12 @@ function R.check(cfg, old, U, proxy)
         local nextArray = arrays[a.address]
         local routeChanged = a.enabled and not keepsBeeRoute(a, nextArray)
         if routeChanged then
-            local node = proxy(a.nodes[1].address)
             local tip = '请先按 Q 等待蜂群归位，再修改阵列的蜂群连接：'
                 .. a.address
-            assert(not node or not node.getProvidedTier(), tip)
+            for _, n in ipairs(a.nodes) do
+                local node = proxy(n.address)
+                assert(not node or not node.getProvidedTier(), tip)
+            end
             for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                 local port = oldInv[id]
                 local mover = proxy(port.transposer)

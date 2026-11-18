@@ -205,6 +205,10 @@ function B.run(case, opt)
                     local old = n.progress
                     advanceNode(n, newly and 1 or ticks, machine.tier, machine.bees, n.recipe.steps)
                     if n.progress > old and not n.consumed then
+                        local job = metrics.jobs[n.recipe.id]
+                        if not job.firstProgress then
+                            job.firstProgress, job.firstTier = now, machine.tier
+                        end
                         for fluid, unit in pairs(n.recipe.unit) do
                             w.stock[fluid] = w.stock[fluid] - unit * n.count
                             assert(w.stock[fluid] >= 0, 'fluid over-allocation')
@@ -278,6 +282,53 @@ function B.run(case, opt)
     w.e.io.save = function()
         error('all recipes were prelearned')
     end
+    metrics.earlyStarts, metrics.fastBatches = 0, 0
+    if opt.earlyStart then
+        -- Mirror the shared pool's FIFO availability without issuing transfers or requests.
+        local function available(e, a, state, tier)
+            if e.provided[a.address] == tier then
+                return true
+            end
+            local before = state.request and state.request.tier == tier and state.request.id
+                or e.s.nextId
+            local free = 0
+            for _, c in ipairs(e.pools[a.beePool].cells) do
+                if c.tier == tier and (e.charge[a.beePool][c.box .. ':' .. c.slot] or 0) > 0 then
+                    free = free + 1
+                end
+            end
+            for _, other in ipairs(e.arrays) do
+                local req = e.s.arrays[other.address].request
+                if other.beePool == a.beePool and req and req.tier == tier and req.id < before then
+                    free = free - 1
+                end
+            end
+            return free > 0
+        end
+        local beeCount = w.e.beeCount
+        function w.e:beeCount(a, cell)
+            local count = beeCount(self, a, cell)
+            local s = self.s.arrays[a.address]
+            local b = s.batch
+            if s.bee or available(self, a, s, cell.tier) then
+                return count
+            end
+            local steps = self.s.patterns[b.key].steps
+            local cells = self:beeCells(a)
+            local first = self.N.tier(steps[1].tier, cells)
+            if first < cell.tier and available(self, a, s, first) then
+                local parallel = 1
+                for _, worker in ipairs(b.workers) do
+                    parallel = math.max(parallel, worker.count)
+                end
+                if self.N.fastTier(steps, cells, { [cell.tier] = count }, parallel) then
+                    metrics.earlyStarts = metrics.earlyStarts + 1
+                    return 0
+                end
+            end
+            return count
+        end
+    end
     local seenRun = {}
     measuring = true
     local loops = 0
@@ -294,6 +345,9 @@ function B.run(case, opt)
             local b = state.arrays[a.address].batch
             if b and b.phase == 'run' and not seenRun[b] then
                 seenRun[b] = true
+                if b.fixed then
+                    metrics.fastBatches = metrics.fastBatches + 1
+                end
                 if b.collection then
                     metrics.singularityBatches = metrics.singularityBatches + 1
                 end

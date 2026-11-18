@@ -84,10 +84,12 @@ function R.check(cfg, old, U, proxy)
         local nextArray = arrays[a.address]
         local routeChanged = a.enabled and not keepsBeeRoute(a, nextArray)
         if routeChanged then
-            local node = proxy(a.nodes[1].address)
             local tip = '请先按 Q 等待蜂群归位，再修改阵列的蜂群连接：'
                 .. a.address
-            assert(not node or not node.getProvidedTier(), tip)
+            for _, n in ipairs(a.nodes) do
+                local node = proxy(n.address)
+                assert(not node or not node.getProvidedTier(), tip)
+            end
             for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                 local port = oldInv[id]
                 local mover = proxy(port.transposer)

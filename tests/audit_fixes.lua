@@ -142,6 +142,29 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
 
     editor:act('tab:2')
     for i, o in ipairs(editor:objects()) do
+        if o.kind == 'box' and o.box == 1 then
+            editor:act('select:' .. i)
+            break
+        end
+    end
+    editor:draw()
+    local slots = {}
+    for _, h in ipairs(ui.hits) do
+        local number = h.id:match('^slot:(%d+)$')
+        if number then
+            slots[tonumber(number)] = h
+        end
+    end
+    assert(#slots == 27)
+    for i, h in ipairs(slots) do
+        assert(ui:hit(h.x + h.w - 1, h.y + 1) == h.id)
+        assert(ui:hit(h.x, h.y + 2) ~= h.id)
+        editor:event('touch', 'screen', h.x, h.y, 0)
+        assert(editor.selected[i])
+        editor:event('touch', 'screen', h.x + 1, h.y + 1, 0)
+        assert(not editor.selected[i])
+    end
+    for i, o in ipairs(editor:objects()) do
         if o.kind == 'pool' then
             editor.pos = i
             break

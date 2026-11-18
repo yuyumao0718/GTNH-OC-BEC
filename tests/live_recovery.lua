@@ -325,7 +325,7 @@ print('  PASS Q checks AE only after the last active batch and returns its bee s
 
 do
     local R = dofile(ROOT .. 'ma_recovery.lua')
-    local w = make(2, 0, { nodes = 1 })
+    local w = make(2, 0, { nodes = 3 })
     w.share({ { tier = 1, slot = 1, count = 32 } })
     w.boot()
     local a = w.cfg.arrays[1]
@@ -337,6 +337,9 @@ do
     end
     assert(w.arrays.a1.bees == 32)
     w.e:pause()
+    w.components[a.nodes[1].address].getProvidedTier = function()
+        return nil
+    end
     local cfg = U.copy(w.cfg)
     cfg.arrays[1].name = '改名'
     cfg.beePools[1].cells[2] = { tier = 2, box = 1, slot = 2 }

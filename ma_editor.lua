@@ -1168,7 +1168,7 @@ function F:drawBox(o, x, width)
         local slot = first + i
         local xx = x + (i % 9) * cw
         local yy = 8 + math.floor(i / 9) * 3
-        ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw)
+        ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw, 2)
         if not self.selected[slot] then
             ui:put(
                 xx,

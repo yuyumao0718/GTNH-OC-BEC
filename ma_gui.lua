@@ -90,7 +90,7 @@ function G:button(id, x, y, label, selected, width)
     self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
 end
 
-function G:control(id, x, y, label, selected, width)
+function G:control(id, x, y, label, selected, width, hitHeight)
     local text = self:clip(label, width or self.w - x + 1)
     local n = width or self.u.wlen(text)
     self:put(
@@ -101,12 +101,12 @@ function G:control(id, x, y, label, selected, width)
         selected and ink.bg or ink.cyan,
         selected and ink.cyan or ink.panel
     )
-    self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n }
+    self.hits[#self.hits + 1] = { id = id, x = x, y = y, w = n, h = hitHeight }
 end
 
 function G:hit(x, y)
     for _, h in ipairs(self.hits) do
-        if y == h.y and x >= h.x and x < h.x + h.w then
+        if y >= h.y and y < h.y + (h.h or 1) and x >= h.x and x < h.x + h.w then
             return h.id
         end
     end

@@ -6,5 +6,6 @@
 - [带实际界面渲染的配置示例](wiki/index.html)
 - [测试方法与覆盖范围](测试说明.md)
 - [49 套与 54 套共享蜂群的星门耗时](simulation/49套与54套蜂群.md)
+- [6、10、30 台阵列制作星门的提前开工对照](simulation/星门提前开工对照.md)
 
 游戏内安装器：[`install/multi_install.lua`](install/multi_install.lua)。安装器内含程序文件，保留已有配置和配方缓存，运行时从节点及公共 AE 子网续做。
