@@ -47,8 +47,9 @@ function G.new(gpu, event, unicode, config, materials)
     if w < 80 or h < 25 then
         local mw, mh = gpu.maxResolution()
         gpu.setResolution(math.min(120, mw), math.min(38, mh))
+        w, h = gpu.getResolution()
     end
-    self.w, self.h = gpu.getResolution()
+    self.w, self.h = w, h
     assert(
         self.w >= 80 and self.h >= 25,
         '中文配置需要至少 80×25 分辨率，请使用二级或三级显卡与屏幕'
@@ -65,7 +66,6 @@ function G:clip(s, n)
 end
 
 function G:begin(title)
-    self.w, self.h = self.gpu.getResolution()
     self.rows = {}
     self.hits = {}
     for y = 1, self.h do
@@ -118,6 +118,9 @@ function G:discardInput()
         local name = self.event.pull(0)
         if not name then
             return interrupted
+        end
+        if name == 'screen_resized' then
+            self.w, self.h = self.gpu.getResolution()
         end
         interrupted = interrupted or name == 'interrupted'
     end
@@ -221,7 +224,9 @@ function G:paint()
         end
         self.cache[y] = row
     end
-    colors(0xFFFFFF, 0x000000)
+    if foreground then
+        colors(0xFFFFFF, 0x000000)
+    end
 end
 
 function G:recordName(cfg, section, value)
@@ -253,8 +258,9 @@ end
 function G:choices(f, cfg, devices)
     local rows = {}
     if f.source:sub(1, 7) == 'device:' then
+        local kind = f.source:sub(8)
         for _, d in ipairs(devices) do
-            if self.C.matches(d, f.source:sub(8)) then
+            if (kind ~= 'buffer' or d.kind == 'me_controller') and self.C.matches(d, kind) then
                 local names = {
                     me_controller = 'ME 控制器',
                     me_interface = 'ME 接口',
@@ -828,6 +834,10 @@ function G:arrayPanel(e, x, top, width, bottom)
 end
 
 function G:runtimeEvent(name, _, ch, code, direction)
+    if name == 'screen_resized' then
+        self.w, self.h = self.gpu.getResolution()
+        return 'redraw'
+    end
     local action = name == 'touch' and self:hit(ch, code)
     if name == 'key_down' then
         if ch == 115 or ch == 83 then

@@ -63,10 +63,6 @@ local function screen()
     return gui
 end
 
-local function compatible(cfg, state)
-    return Recovery.check(cfg, state, U, component.proxy)
-end
-
 local function startupProgress()
     local status = { since = computer.realTime() }
     local lastStage, lastDraw
@@ -94,28 +90,38 @@ local function configure()
         end
         cfg = C.defaults()
     end
+    local activeCfg
     local result = screen():edit(cfg, component, {
         U = U,
         progress = startupProgress,
         clearRecipes = function()
-            Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
+            local saved = store.read('multi.cfg') or cfg
+            Recovery.idle({
+                channels = saved.channels,
+                arrays = C.connectedArrays(saved, component, {}),
+            }, component.proxy)
             return store.clearRecipes()
         end,
         draft = function(value)
             store.write('multi.setup', value)
         end,
-        write = function(value)
-            compatible(value, store.read('multi.cfg'))
+        write = function(value, checked, kinds)
+            local old = store.read('multi.cfg')
+            if old then
+                old.arrays = C.connectedArrays(old, component, kinds)
+                Recovery.check(value, old, U, component.proxy)
+            end
             store.write('multi.cfg', value)
             if fs.exists(base .. 'multi.setup') then
                 fs.remove(base .. 'multi.setup')
             end
+            activeCfg = checked
         end,
     })
     if not result then
         store.write('multi.setup', cfg)
     end
-    return result and cfg or nil
+    return activeCfg
 end
 if command == 'setup' then
     configure()
@@ -133,7 +139,8 @@ local ok, err = xpcall(function()
         local cfg = validatedCfg
             or C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
         if not validatedCfg then
-            C.validate(cfg, component, U, progress)
+            local _, checked = C.validate(cfg, component, U, progress)
+            cfg = checked
         end
         validatedCfg = nil
         if progress then
@@ -177,6 +184,7 @@ local ok, err = xpcall(function()
         local editing = false
         local stopping = false
         local interrupted = false
+        local nextInput = 0
         local function input(timeout)
             local ev = table.pack(pull(timeout))
             while ev[1] do
@@ -197,6 +205,7 @@ local ok, err = xpcall(function()
                 end
                 ev = table.pack(pull(0))
             end
+            nextInput = computer.realTime() + 0.05
             return false
         end
         local function draw()
@@ -217,9 +226,11 @@ local ok, err = xpcall(function()
         lastDraw = computer.realTime()
         interrupted = screen():discardInput()
         engine.io.pulse = function()
-            interrupted = interrupted or input(0)
-            if not interrupted then
-                draw()
+            if not interrupted and computer.realTime() >= nextInput then
+                interrupted = input(0)
+                if not interrupted then
+                    draw()
+                end
             end
             return interrupted
         end
@@ -237,24 +248,19 @@ local ok, err = xpcall(function()
                 refill:tick()
             end
             if stopping and engine:drain() then
-                local pending = false
-                for _, s in pairs(state.refill.feeds) do
-                    if s.loading then
-                        pending = true
-                    end
-                end
-                if not pending then
-                    break
-                end
+                break
             end
         end
-        if not editing then
+        if interrupted then
             break
         end
         engine:subscribe(false)
         engine.save()
         previousCfg = engine.cfg
         engine = nil
+        if not editing then
+            break
+        end
         validatedCfg = configure() or previousCfg
     until false
 end, debug.traceback)
@@ -333,7 +339,7 @@ C.schema = {
         list('cells', '蜂群元件', {
             num('tier', '等级', 1, 1, 10),
             num('box', '箱子编号', 1, 1),
-            num('slot', '箱内固定槽位', 1, 1),
+            num('slot', '末影箱槽位（1–27）', 1, 1, 27),
         }),
     }),
     list('arrays', '观测阵列', {
@@ -411,10 +417,13 @@ function C.defaults(cfg)
     return cfg
 end
 
+local nativeKinds =
+    { bec_io_node = true, bec_storage = true, bec_diode = true, transposer = true, redstone = true }
+
 function C.scan(component, cfg)
     local devices = {}
     for a, k in component.list() do
-        local d = { address = a, kind = k, methods = component.methods(a) }
+        local d = { address = a, kind = k, methods = nativeKinds[k] and {} or component.methods(a) }
         if d.methods.getName then
             local ok, n = pcall(component.invoke, a, 'getName')
             if ok then
@@ -509,6 +518,21 @@ function C.unboundDoors(cfg, devices)
     return doors
 end
 
+function C.connectedArrays(cfg, component, kinds)
+    local arrays = {}
+    for _, a in ipairs(cfg.arrays) do
+        if a.enabled then
+            if component and kinds[a.address] == nil then
+                kinds[a.address] = component.type(a.address) or false
+            end
+            if not component or kinds[a.address] then
+                arrays[#arrays + 1] = a
+            end
+        end
+    end
+    return arrays
+end
+
 function C.validate(cfg, component, U, progress)
     if progress then
         progress('校验配置', '检查设备绑定和元件位置')
@@ -531,26 +555,44 @@ function C.validate(cfg, component, U, progress)
             end
         end
     end
-    -- Disabled newly discovered arrays may remain unconfigured.
     local checked = {}
     for key, value in pairs(cfg) do
         checked[key] = value
     end
-    checked.arrays = {}
-    for _, a in ipairs(cfg.arrays) do
-        if a.enabled then
-            checked.arrays[#checked.arrays + 1] = a
+    local kinds = {}
+    checked.arrays = C.connectedArrays(cfg, component, kinds)
+    assert(#checked.arrays > 0, '请连接并启用至少一台观测阵列')
+    local inventoryIds, poolIds = {}, {}
+    for _, a in ipairs(checked.arrays) do
+        poolIds[a.beePool] = true
+        inventoryIds[a.loadPort], inventoryIds[a.unloadPort] = true, true
+        for _, b in ipairs(a.beeBoxes) do
+            inventoryIds[b.inventory] = true
         end
     end
+    for _, f in ipairs(cfg.feeds) do
+        inventoryIds[f.io] = true
+        for _, c in ipairs(f.cells) do
+            inventoryIds[c.inventory] = true
+        end
+    end
+    local function referenced(list, ids)
+        local result = {}
+        for _, value in ipairs(list) do
+            if ids[value.id] then
+                result[#result + 1] = value
+            end
+        end
+        return result
+    end
+    checked.inventories = referenced(cfg.inventories, inventoryIds)
+    checked.beePools = referenced(cfg.beePools, poolIds)
     basic(C.schema, checked, '')
-    assert(
-        #checked.arrays > 0 and #cfg.channels == 1,
-        '至少启用一台阵列，并配置唯一的公共原料子网'
-    )
-    local inv, feeds = U.index(cfg.inventories), U.index(cfg.feeds)
+    assert(#cfg.channels == 1, '请配置唯一的公共原料子网')
+    local inv, feeds = U.index(checked.inventories), U.index(cfg.feeds)
     for _, section in ipairs({ 'inventories', 'channels', 'feeds', 'beePools' }) do
         local seen = {}
-        for _, x in ipairs(cfg[section]) do
+        for _, x in ipairs(checked[section]) do
             assert(not seen[x.id], '重复名称：' .. x.id)
             seen[x.id] = true
         end
@@ -579,9 +621,9 @@ function C.validate(cfg, component, U, progress)
         )
         assert(a.side ~= b.side, '元件容器和 ME-IO 端口不能使用同一方向')
     end
-    local pools = U.index(cfg.beePools)
+    local pools = U.index(checked.beePools)
     local boxPools = {}
-    for _, p in ipairs(cfg.beePools) do
+    for _, p in ipairs(checked.beePools) do
         assert(#p.cells > 0, '蜂群池未登记蜂群元件：' .. p.id)
         local slots = {}
         for _, c in ipairs(p.cells) do
@@ -619,20 +661,22 @@ function C.validate(cfg, component, U, progress)
                 '阵列的蜂群箱编号重复：' .. a.address .. ' / ' .. box.box
             )
             boxes[box.box] = true
-            assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
+            local container =
+                assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
+            local face = container.transposer .. ':' .. container.side
             local key = a.beePool .. ':' .. box.box
             assert(
-                not boxPools[box.inventory] or boxPools[box.inventory] == key,
-                '同一蜂群箱不能登记为不同的池或箱子编号'
+                not boxPools[face] or boxPools[face] == key,
+                '不同蜂群箱不能使用同一转运器的同一方向：' .. face
             )
             for _, c in ipairs(pool.cells) do
                 if c.box == box.box then
-                    if not boxPools[box.inventory] then
+                    if not boxPools[face] then
                         own(box.inventory, c.slot)
                     end
                 end
             end
-            boxPools[box.inventory] = key
+            boxPools[face] = key
             connected(box.inventory, a.loadPort)
             connected(box.inventory, a.unloadPort)
         end
@@ -709,7 +753,7 @@ function C.validate(cfg, component, U, progress)
                         end
                         d = {
                             kind = assert(
-                                component.type(a),
+                                kinds[a] or component.type(a),
                                 '组件离线：' .. f.label .. ' ' .. a
                             ),
                         }
@@ -731,7 +775,7 @@ function C.validate(cfg, component, U, progress)
             progress('检查设备连接', '设备连接检查完成', count, count)
         end
     end
-    return true
+    return true, checked, kinds
 end
 return C
 ]=],
@@ -2007,7 +2051,7 @@ function E:array(a)
                 return
             end
         end
-        local now = self.io.time()
+        local now = not b.fixed and self.io.time()
         local complete
         if b.fixed then
             b.targetTier = b.fixed
@@ -2017,12 +2061,12 @@ function E:array(a)
             local workers = {}
             local views = {}
             for index, w in ipairs(b.workers) do
-                local n = self.io.proxy(w.address)
                 local cached = self:worker(w)
-                if not cached.done and n.hasWork() then
-                    local progress = n.getWorkProgress()
-                    local tier = self.N.requested(meta.steps, progress)
-                    if n.hasWork() then
+                if not cached.done then
+                    local n = self.io.proxy(w.address)
+                    local progress = n.hasWork() and n.getWorkProgress()
+                    if progress and n.hasWork() then
+                        local tier = self.N.requested(meta.steps, progress)
                         workers[#workers + 1] =
                             { progress = progress, tier = tier, address = w.address }
                         views[index] = {
@@ -2035,8 +2079,6 @@ function E:array(a)
                     else
                         cached.done = true
                     end
-                else
-                    cached.done = true
                 end
             end
             self.observations[a.address] = views
@@ -2085,6 +2127,11 @@ function E:drain()
     end
     for _, a in ipairs(self.arrays) do
         if self.s.arrays[a.address].batch then
+            return false
+        end
+    end
+    for _, feed in pairs(self.s.refill.feeds) do
+        if feed.loading then
             return false
         end
     end
@@ -2270,7 +2317,6 @@ function F.new(ui, cfg, component, save)
         offset = 1,
         selected = {},
         grade = 1,
-        boxPage = 1,
         fluidIndex = 1,
         fluidPage = 1,
         fluidKey = 'low',
@@ -2524,7 +2570,6 @@ function F:openTab(tab)
     self.offset = 1
     self.popup = nil
     self.selected = {}
-    self.boxPage = 1
 end
 
 function F:field(label, target, key, kind, source, lo, hi)
@@ -2666,6 +2711,7 @@ function F:form(fluidIndex)
         action(
             '麦克斯韦门：' .. (x.diode ~= '' and x.diode:sub(1, 12) or '未绑定'),
             function()
+                self.devices = self.ui.C.scan(self.component, self.cfg)
                 self:doorPicker(x)
             end
         )
@@ -2787,20 +2833,6 @@ function F:form(fluidIndex)
     return rows
 end
 
-function F:choices(f)
-    local rows = self.ui:choices(f, self.cfg, self.devices)
-    if f.source == 'device:buffer' then
-        local controllers = {}
-        for _, row in ipairs(rows) do
-            if self.component.type(row.value) == 'me_controller' then
-                controllers[#controllers + 1] = row
-            end
-        end
-        rows = controllers
-    end
-    return rows
-end
-
 function F:nodePicker(a)
     local allowed = {}
     for _, d in ipairs(self.ui.C.unboundNodes(self.cfg, self.devices)) do
@@ -2868,7 +2900,6 @@ function F:bindNodes(a)
 end
 
 function F:doorPicker(a)
-    self.devices = self.ui.C.scan(self.component, self.cfg)
     local options = {}
     for _, d in ipairs(self.ui.C.unboundDoors(self.cfg, self.devices)) do
         options[#options + 1] = { value = d.address, label = d.address }
@@ -2984,7 +3015,7 @@ function F:activate(f, button)
         f.set(not f.get())
         self:changed()
     elseif f.kind == 'choice' or f.kind == 'side' then
-        local options = f.kind == 'side' and {} or self:choices(f)
+        local options = f.kind == 'side' and {} or self.ui:choices(f, self.cfg, self.devices)
         if f.kind == 'side' then
             for i = 0, 5 do
                 options[#options + 1] = { value = i, label = i .. ' ' .. sides[i + 1] }
@@ -3096,7 +3127,6 @@ function F:act(action, button)
         self.pos = tonumber(action:sub(8))
         self.offset = 1
         self.selected = {}
-        self.boxPage = 1
         self.popup = nil
     elseif action:match('^field:') then
         self:activate(self:form()[tonumber(action:sub(7))], button)
@@ -3120,11 +3150,12 @@ function F:act(action, button)
                 end
             end
             local progress = self.save.progress and self.save.progress()
-            self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
+            local _, checked, kinds =
+                self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
             if progress then
                 progress('保存配置', '正在保存设备配置')
             end
-            self.save.write(self.cfg)
+            self.save.write(self.cfg, checked, kinds)
         end)
         if ok then
             self.saved = true
@@ -3181,7 +3212,7 @@ function F:act(action, button)
                 end
             end
             self.selected = {}
-            self.boxPage, self.offset = 1, 1
+            self.offset = 1
             for i, item in ipairs(self:objects()) do
                 if item.kind == 'pool' and item.value == pool then
                     self.pos = i
@@ -3206,7 +3237,7 @@ function F:act(action, button)
             self:act(action == 'up' and 'prev' or 'next')
         else
             self.pos = math.max(1, self.pos + (action == 'up' and -1 or 1))
-            self.boxPage, self.offset = 1, 1
+            self.offset = 1
             self.selected = {}
         end
     elseif action == 'prev' or action == 'next' then
@@ -3220,10 +3251,7 @@ function F:act(action, button)
                 1,
                 math.min(self.fluidPages or 1, self.fluidPage + (action == 'prev' and -1 or 1))
             )
-        elseif o and o.kind == 'box' then
-            self.boxPage = math.max(1, self.boxPage + (action == 'prev' and -1 or 1))
-            self.selected = {}
-        else
+        elseif not o or o.kind ~= 'box' then
             self.offset = math.max(
                 1,
                 math.min(
@@ -3310,7 +3338,10 @@ function F:act(action, button)
 end
 
 function F:event(name, _, ch, code, direction)
-    if name == 'interrupted' then
+    if name == 'screen_resized' then
+        self.ui.w, self.ui.h = self.ui.gpu.getResolution()
+        return
+    elseif name == 'interrupted' then
         self:act('quit')
         return
     end
@@ -3396,9 +3427,8 @@ function F:drawBox(o, x, width)
     end
     ui:put(x, 6, '箱子 ' .. o.box .. ' / 按槽位登记蜂群', width, ui.ink.green)
     local cw = math.floor(width / 9)
-    local first = (self.boxPage - 1) * 27 + 1
     for i = 0, 26 do
-        local slot = first + i
+        local slot = i + 1
         local xx = x + (i % 9) * cw
         local yy = 8 + math.floor(i / 9) * 3
         ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw, 2)
@@ -3763,13 +3793,16 @@ function F:draw()
             )
         end
     end
-    ui:control('prev', x, b.nav, '上一页')
-    ui:control('next', x + 12, b.nav, '下一页')
+    local paged = self.popup or not o or o.kind ~= 'box'
+    if paged then
+        ui:control('prev', x, b.nav, '上一页')
+        ui:control('next', x + 12, b.nav, '下一页')
+    end
     ui:control('refresh', x + 24, b.nav, 'F 刷新')
     ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
     ui:control('save', 2, h, 'S 保存并返回')
     ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
-    ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
+    ui:put(47, h, paged and '↑↓对象 []翻页' or '↑↓对象', w - 48, ink.dim)
     ui:paint()
 end
 
@@ -3841,8 +3874,9 @@ function G.new(gpu, event, unicode, config, materials)
     if w < 80 or h < 25 then
         local mw, mh = gpu.maxResolution()
         gpu.setResolution(math.min(120, mw), math.min(38, mh))
+        w, h = gpu.getResolution()
     end
-    self.w, self.h = gpu.getResolution()
+    self.w, self.h = w, h
     assert(
         self.w >= 80 and self.h >= 25,
         '中文配置需要至少 80×25 分辨率，请使用二级或三级显卡与屏幕'
@@ -3859,7 +3893,6 @@ function G:clip(s, n)
 end
 
 function G:begin(title)
-    self.w, self.h = self.gpu.getResolution()
     self.rows = {}
     self.hits = {}
     for y = 1, self.h do
@@ -3912,6 +3945,9 @@ function G:discardInput()
         local name = self.event.pull(0)
         if not name then
             return interrupted
+        end
+        if name == 'screen_resized' then
+            self.w, self.h = self.gpu.getResolution()
         end
         interrupted = interrupted or name == 'interrupted'
     end
@@ -4015,7 +4051,9 @@ function G:paint()
         end
         self.cache[y] = row
     end
-    colors(0xFFFFFF, 0x000000)
+    if foreground then
+        colors(0xFFFFFF, 0x000000)
+    end
 end
 
 function G:recordName(cfg, section, value)
@@ -4047,8 +4085,9 @@ end
 function G:choices(f, cfg, devices)
     local rows = {}
     if f.source:sub(1, 7) == 'device:' then
+        local kind = f.source:sub(8)
         for _, d in ipairs(devices) do
-            if self.C.matches(d, f.source:sub(8)) then
+            if (kind ~= 'buffer' or d.kind == 'me_controller') and self.C.matches(d, kind) then
                 local names = {
                     me_controller = 'ME 控制器',
                     me_interface = 'ME 接口',
@@ -4622,6 +4661,10 @@ function G:arrayPanel(e, x, top, width, bottom)
 end
 
 function G:runtimeEvent(name, _, ch, code, direction)
+    if name == 'screen_resized' then
+        self.w, self.h = self.gpu.getResolution()
+        return 'redraw'
+    end
     local action = name == 'touch' and self:hit(ch, code)
     if name == 'key_down' then
         if ch == 115 or ch == 83 then
@@ -5114,7 +5157,11 @@ function R.check(cfg, old, U, proxy)
                 return false
             end
         end
-        local oldCells, newCells = oldPools[a.beePool].cells, newPools[b.beePool].cells
+        local oldPool = oldPools[a.beePool]
+        if not oldPool then
+            return false
+        end
+        local oldCells, newCells = oldPool.cells, newPools[b.beePool].cells
         if U.equal(oldCells, newCells) then
             return true
         end
@@ -5141,7 +5188,7 @@ function R.check(cfg, old, U, proxy)
             end
             for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                 local port = oldInv[id]
-                local mover = proxy(port.transposer)
+                local mover = port and proxy(port.transposer)
                 assert(
                     not mover
                         or not (

@@ -54,10 +54,6 @@ local function screen()
     return gui
 end
 
-local function compatible(cfg, state)
-    return Recovery.check(cfg, state, U, component.proxy)
-end
-
 local function startupProgress()
     local status = { since = computer.realTime() }
     local lastStage, lastDraw
@@ -85,28 +81,38 @@ local function configure()
         end
         cfg = C.defaults()
     end
+    local activeCfg
     local result = screen():edit(cfg, component, {
         U = U,
         progress = startupProgress,
         clearRecipes = function()
-            Recovery.idle(store.read('multi.cfg') or cfg, component.proxy)
+            local saved = store.read('multi.cfg') or cfg
+            Recovery.idle({
+                channels = saved.channels,
+                arrays = C.connectedArrays(saved, component, {}),
+            }, component.proxy)
             return store.clearRecipes()
         end,
         draft = function(value)
             store.write('multi.setup', value)
         end,
-        write = function(value)
-            compatible(value, store.read('multi.cfg'))
+        write = function(value, checked, kinds)
+            local old = store.read('multi.cfg')
+            if old then
+                old.arrays = C.connectedArrays(old, component, kinds)
+                Recovery.check(value, old, U, component.proxy)
+            end
             store.write('multi.cfg', value)
             if fs.exists(base .. 'multi.setup') then
                 fs.remove(base .. 'multi.setup')
             end
+            activeCfg = checked
         end,
     })
     if not result then
         store.write('multi.setup', cfg)
     end
-    return result and cfg or nil
+    return activeCfg
 end
 if command == 'setup' then
     configure()
@@ -124,7 +130,8 @@ local ok, err = xpcall(function()
         local cfg = validatedCfg
             or C.defaults(assert(store.read('multi.cfg'), '请先运行 bec_multi.lua setup'))
         if not validatedCfg then
-            C.validate(cfg, component, U, progress)
+            local _, checked = C.validate(cfg, component, U, progress)
+            cfg = checked
         end
         validatedCfg = nil
         if progress then
@@ -168,6 +175,7 @@ local ok, err = xpcall(function()
         local editing = false
         local stopping = false
         local interrupted = false
+        local nextInput = 0
         local function input(timeout)
             local ev = table.pack(pull(timeout))
             while ev[1] do
@@ -188,6 +196,7 @@ local ok, err = xpcall(function()
                 end
                 ev = table.pack(pull(0))
             end
+            nextInput = computer.realTime() + 0.05
             return false
         end
         local function draw()
@@ -208,9 +217,11 @@ local ok, err = xpcall(function()
         lastDraw = computer.realTime()
         interrupted = screen():discardInput()
         engine.io.pulse = function()
-            interrupted = interrupted or input(0)
-            if not interrupted then
-                draw()
+            if not interrupted and computer.realTime() >= nextInput then
+                interrupted = input(0)
+                if not interrupted then
+                    draw()
+                end
             end
             return interrupted
         end
@@ -228,24 +239,19 @@ local ok, err = xpcall(function()
                 refill:tick()
             end
             if stopping and engine:drain() then
-                local pending = false
-                for _, s in pairs(state.refill.feeds) do
-                    if s.loading then
-                        pending = true
-                    end
-                end
-                if not pending then
-                    break
-                end
+                break
             end
         end
-        if not editing then
+        if interrupted then
             break
         end
         engine:subscribe(false)
         engine.save()
         previousCfg = engine.cfg
         engine = nil
+        if not editing then
+            break
+        end
         validatedCfg = configure() or previousCfg
     until false
 end, debug.traceback)

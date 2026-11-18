@@ -7,15 +7,19 @@ local unicode = { len = utf_len, sub = utf_sub, wlen = utf_width, char = utf_cha
 
 for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
     local pixels, writes = {}, {}
+    local settingsCalls = 0
     local fg, bg
     local gpu = {
         getResolution = function()
+            settingsCalls = settingsCalls + 1
             return size[1], size[2]
         end,
         setForeground = function(value)
+            settingsCalls = settingsCalls + 1
             fg = value
         end,
         setBackground = function(value)
+            settingsCalls = settingsCalls + 1
             bg = value
         end,
         set = function(x, y, text)
@@ -134,8 +138,10 @@ for _, size in ipairs({ { 80, 25 }, { 120, 38 }, { 160, 50 } }) do
         ui:runtime(e, r)
     end
     writes = {}
+    settingsCalls = 0
     ui:runtime(e, r)
-    assert(#writes == 0, 'unchanged contents redrew the GPU')
+    assert(#writes == 0 and settingsCalls == 0, 'unchanged frame must make zero GPU calls')
+    assert(ui:runtimeEvent('screen_resized') == 'redraw' and settingsCalls == 1)
     for _, n in pairs(e.observations[a.address]) do
         n.progress = n.progress + 1000
     end

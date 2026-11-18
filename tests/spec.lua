@@ -606,7 +606,7 @@ test('incremental node binding keeps previous arrays and filters assigned choice
             end
         end,
         methods = function()
-            return {}
+            error('node binding only needs the component type from list()')
         end,
     }
     local a, b = { address = 'a', nodes = {} }, { address = 'b', nodes = {} }
@@ -777,11 +777,15 @@ test(
         editor.devices[#editor.devices + 1] =
             { address = 'GATE-C', kind = 'bec_diode', methods = {} }
         local originalScan = C.scan
+        local scans = 0
         C.scan = function()
+            scans = scans + 1
             return editor.devices
         end
         editor:doorPicker(b)
+        editor:act('refresh')
         C.scan = originalScan
+        assert(scans == 1)
         assert(b.diode == '' and #editor.popup.options == 2)
         editor:act('pick:2')
         assert(b.diode == 'GATE-C')
@@ -1047,7 +1051,8 @@ test('default configuration names are Chinese in fields and selectors', function
     editor:act('tab:3')
     assert(editor:value(formField(editor, '阵列名称')) == '观测阵列 1')
     local f = formField(editor, '使用的蜂群池')
-    assert(editor:value(f) == '蜂群池 1' and editor:choices(f)[2].label == '蜂群池 2')
+    editor:activate(f)
+    assert(editor:value(f) == '蜂群池 1' and editor.popup.options[2].label == '蜂群池 2')
     assert(editor.ui:recordName(ex.cfg, 'channels', ex.cfg.channels[1]) == '公共原料子网')
     assert(editor.ui:recordName(ex.cfg, 'feeds', ex.cfg.feeds[1]) == '预缓存设备')
     assert(editor.ui:recordName(ex.cfg, 'beePools', nil) == '未选择')
@@ -1062,6 +1067,7 @@ test('fluid table edits individual rows and pages without changing other fluids'
         editor.ui.gpu.getResolution = function()
             return size[1], size[2]
         end
+        editor:event('screen_resized')
         objectKind(editor, 'fluids')
         editor:draw()
         local function click(id, button)
@@ -1131,6 +1137,7 @@ test('array list keeps the selected name and node count together across page bou
         editor.ui.gpu.getResolution = function()
             return size[1], size[2]
         end
+        editor:event('screen_resized')
         for i = 3, 37 do
             local a = U.copy(ex.cfg.arrays[1])
             a.address = 'array-' .. i
@@ -1249,12 +1256,25 @@ test('deleting a bee box removes only its cells and bindings without renumbering
     e:act('tab:2')
     objectKind(e, 'box', pool)
     assert(e:object().box == 1)
+    e:act('slot:27')
     e:act('next')
-    assert(e.boxPage == 2)
+    e:act('prev')
+    assert(e.selected[27])
+    e:draw()
+    local slots = 0
+    for _, h in ipairs(e.ui.hits) do
+        assert(h.id ~= 'next' and h.id ~= 'prev')
+        local slot = tonumber(h.id:match('^slot:(%d+)$'))
+        if slot then
+            assert(slot >= 1 and slot <= 27)
+            slots = slots + 1
+        end
+    end
+    assert(slots == 27)
     e:act('down')
-    assert(e:object().box == 2 and e.boxPage == 1)
+    assert(e:object().box == 2 and not next(e.selected))
     e:act('up')
-    assert(e:object().box == 1 and e.boxPage == 1)
+    assert(e:object().box == 1)
     e:draw()
     local hit
     for _, h in ipairs(e.ui.hits) do
@@ -1329,6 +1349,64 @@ test('configuration validates each device once and skips unconfigured disabled a
     end
     assert(C.validate(ex.cfg, components, U))
     assert(#ex.cfg.arrays == 3 and not ex.cfg.arrays[3].nodes)
+end)
+
+test('only enabled reachable arrays and their own connections take part in validation', function()
+    local ex = dofile(ROOT .. 'examples/two-arrays.lua')
+    local a, b = table.unpack(ex.cfg.arrays)
+    local realType = ex.component.type
+    local offline = { [b.address] = true, TB = true, [b.nodes[1].address] = true }
+    local reads = {}
+    ex.component.type = function(address)
+        reads[address] = (reads[address] or 0) + 1
+        if not offline[address] then
+            return realType(address)
+        end
+    end
+    local original = U.copy(ex.cfg)
+    local _, active = C.validate(ex.cfg, ex.component, U)
+    assert(#active.arrays == 1 and active.arrays[1] == a and #active.beePools == 1)
+    assert(not U.index(active.inventories)[b.loadPort])
+    assert(reads[a.address] == 1 and reads[b.address] == 1 and not reads.TB)
+    eq(ex.cfg, original)
+    offline[a.address] = true
+    local ok, err = pcall(C.validate, ex.cfg, ex.component, U)
+    assert(not ok and err:find('连接并启用', 1, true))
+    offline = { [b.nodes[1].address] = true }
+    ok, err = pcall(C.validate, ex.cfg, ex.component, U)
+    assert(not ok and err:find(b.nodes[1].address, 1, true))
+    offline = {}
+    _, active = C.validate(ex.cfg, ex.component, U)
+    assert(#active.arrays == 2 and #active.beePools == 2)
+    local unconfigured = U.copy(original)
+    local old = unconfigured.arrays[2]
+    old.loadPort, old.unloadPort, old.beePool = '', '', ''
+    assert(Recovery.check(ex.cfg, unconfigured, U, function()
+        return {
+            hasWork = function()
+                return false
+            end,
+            getProvidedTier = function() end,
+        }
+    end))
+end)
+
+test('box numbers on one transposer use distinct faces and slots stop at 27', function()
+    local ex = dofile(ROOT .. 'examples/shared-bees.lua')
+    local inv = U.index(ex.cfg.inventories)
+    local boxes = ex.cfg.arrays[1].beeBoxes
+    local second = inv[boxes[2].inventory]
+    local side = second.side
+    second.side = inv[boxes[1].inventory].side
+    local ok, err = pcall(C.validate, ex.cfg, ex.component, U)
+    assert(not ok and err:find('同一转运器的同一方向', 1, true))
+    second.side = side
+    local cell = ex.cfg.beePools[1].cells[1]
+    cell.slot = 27
+    assert(C.validate(ex.cfg, ex.component, U))
+    cell.slot = 28
+    ok, err = pcall(C.validate, ex.cfg, ex.component, U)
+    assert(not ok and err:find('1–27', 1, true))
 end)
 
 print(passed .. ' test groups passed')

@@ -37,7 +37,6 @@ function F.new(ui, cfg, component, save)
         offset = 1,
         selected = {},
         grade = 1,
-        boxPage = 1,
         fluidIndex = 1,
         fluidPage = 1,
         fluidKey = 'low',
@@ -291,7 +290,6 @@ function F:openTab(tab)
     self.offset = 1
     self.popup = nil
     self.selected = {}
-    self.boxPage = 1
 end
 
 function F:field(label, target, key, kind, source, lo, hi)
@@ -433,6 +431,7 @@ function F:form(fluidIndex)
         action(
             '麦克斯韦门：' .. (x.diode ~= '' and x.diode:sub(1, 12) or '未绑定'),
             function()
+                self.devices = self.ui.C.scan(self.component, self.cfg)
                 self:doorPicker(x)
             end
         )
@@ -554,20 +553,6 @@ function F:form(fluidIndex)
     return rows
 end
 
-function F:choices(f)
-    local rows = self.ui:choices(f, self.cfg, self.devices)
-    if f.source == 'device:buffer' then
-        local controllers = {}
-        for _, row in ipairs(rows) do
-            if self.component.type(row.value) == 'me_controller' then
-                controllers[#controllers + 1] = row
-            end
-        end
-        rows = controllers
-    end
-    return rows
-end
-
 function F:nodePicker(a)
     local allowed = {}
     for _, d in ipairs(self.ui.C.unboundNodes(self.cfg, self.devices)) do
@@ -635,7 +620,6 @@ function F:bindNodes(a)
 end
 
 function F:doorPicker(a)
-    self.devices = self.ui.C.scan(self.component, self.cfg)
     local options = {}
     for _, d in ipairs(self.ui.C.unboundDoors(self.cfg, self.devices)) do
         options[#options + 1] = { value = d.address, label = d.address }
@@ -751,7 +735,7 @@ function F:activate(f, button)
         f.set(not f.get())
         self:changed()
     elseif f.kind == 'choice' or f.kind == 'side' then
-        local options = f.kind == 'side' and {} or self:choices(f)
+        local options = f.kind == 'side' and {} or self.ui:choices(f, self.cfg, self.devices)
         if f.kind == 'side' then
             for i = 0, 5 do
                 options[#options + 1] = { value = i, label = i .. ' ' .. sides[i + 1] }
@@ -863,7 +847,6 @@ function F:act(action, button)
         self.pos = tonumber(action:sub(8))
         self.offset = 1
         self.selected = {}
-        self.boxPage = 1
         self.popup = nil
     elseif action:match('^field:') then
         self:activate(self:form()[tonumber(action:sub(7))], button)
@@ -887,11 +870,12 @@ function F:act(action, button)
                 end
             end
             local progress = self.save.progress and self.save.progress()
-            self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
+            local _, checked, kinds =
+                self.ui.C.validate(self.cfg, self.component, self.save.U, progress)
             if progress then
                 progress('保存配置', '正在保存设备配置')
             end
-            self.save.write(self.cfg)
+            self.save.write(self.cfg, checked, kinds)
         end)
         if ok then
             self.saved = true
@@ -948,7 +932,7 @@ function F:act(action, button)
                 end
             end
             self.selected = {}
-            self.boxPage, self.offset = 1, 1
+            self.offset = 1
             for i, item in ipairs(self:objects()) do
                 if item.kind == 'pool' and item.value == pool then
                     self.pos = i
@@ -973,7 +957,7 @@ function F:act(action, button)
             self:act(action == 'up' and 'prev' or 'next')
         else
             self.pos = math.max(1, self.pos + (action == 'up' and -1 or 1))
-            self.boxPage, self.offset = 1, 1
+            self.offset = 1
             self.selected = {}
         end
     elseif action == 'prev' or action == 'next' then
@@ -987,10 +971,7 @@ function F:act(action, button)
                 1,
                 math.min(self.fluidPages or 1, self.fluidPage + (action == 'prev' and -1 or 1))
             )
-        elseif o and o.kind == 'box' then
-            self.boxPage = math.max(1, self.boxPage + (action == 'prev' and -1 or 1))
-            self.selected = {}
-        else
+        elseif not o or o.kind ~= 'box' then
             self.offset = math.max(
                 1,
                 math.min(
@@ -1077,7 +1058,10 @@ function F:act(action, button)
 end
 
 function F:event(name, _, ch, code, direction)
-    if name == 'interrupted' then
+    if name == 'screen_resized' then
+        self.ui.w, self.ui.h = self.ui.gpu.getResolution()
+        return
+    elseif name == 'interrupted' then
         self:act('quit')
         return
     end
@@ -1163,9 +1147,8 @@ function F:drawBox(o, x, width)
     end
     ui:put(x, 6, '箱子 ' .. o.box .. ' / 按槽位登记蜂群', width, ui.ink.green)
     local cw = math.floor(width / 9)
-    local first = (self.boxPage - 1) * 27 + 1
     for i = 0, 26 do
-        local slot = first + i
+        local slot = i + 1
         local xx = x + (i % 9) * cw
         local yy = 8 + math.floor(i / 9) * 3
         ui:control('slot:' .. slot, xx, yy, tostring(slot), self.selected[slot], cw, 2)
@@ -1530,13 +1513,16 @@ function F:draw()
             )
         end
     end
-    ui:control('prev', x, b.nav, '上一页')
-    ui:control('next', x + 12, b.nav, '下一页')
+    local paged = self.popup or not o or o.kind ~= 'box'
+    if paged then
+        ui:control('prev', x, b.nav, '上一页')
+        ui:control('next', x + 12, b.nav, '下一页')
+    end
     ui:control('refresh', x + 24, b.nav, 'F 刷新')
     ui:wrap(2, h - 2, self.message, w - 3, 2, ink.amber)
     ui:control('save', 2, h, 'S 保存并返回')
     ui:control('quit', 22, h, 'Q 返回 / 保留暂存配置')
-    ui:put(47, h, '↑↓对象 []翻页', w - 48, ink.dim)
+    ui:put(47, h, paged and '↑↓对象 []翻页' or '↑↓对象', w - 48, ink.dim)
     ui:paint()
 end
 

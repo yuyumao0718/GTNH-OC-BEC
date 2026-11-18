@@ -513,13 +513,17 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         'slow-redraw',
         'save-interrupt',
         'save-error',
+        'scale-quit-6',
+        'scale-quit-10',
+        'scale-quit-30',
     }) do
         local boot = action:match('^boot%-')
         local check = action:match('^check%-')
+        local scale = tonumber(action:match('^scale%-quit%-(%d+)$'))
         local w = make(
-            check and 2 or 1,
-            (action == 'pending' or boot or check) and 0 or 9,
-            { stageTicks = 40 }
+            scale and scale + 1 or check and 2 or 1,
+            scale and scale * 16 or (action == 'pending' or boot or check) and 0 or 9,
+            { stageTicks = 40, nodes = scale and 16 or 2 }
         )
         if boot then
             local node = w.nodes['a1:n1']
@@ -584,6 +588,21 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
             end
         end
         devices(C.schema, w.cfg)
+        local emptyPollAt, exitWrites = nil, 0
+        if scale then
+            w.stock[fluid] = scale * 16 * 144
+            types[w.cfg.arrays[scale + 1].address] = nil
+            for address in pairs(w.nodes) do
+                local p = w.components[address]
+                local set = p.setWorkAllowed
+                p.setWorkAllowed = function(value)
+                    if sent then
+                        exitWrites = exitWrites + 1
+                    end
+                    return set(value)
+                end
+            end
+        end
         local component = {
             proxy = function(a)
                 return w.components[a]
@@ -621,11 +640,34 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
                         return table.unpack(table.remove(w.signals, 1))
                     end
                     if timeout == 0 then
+                        if scale then
+                            assert(
+                                emptyPollAt ~= w.time,
+                                'duplicate empty poll during the same tick'
+                            )
+                            emptyPollAt = w.time
+                        end
                         return
                     end
                     w.advance()
                     assert(w.time < 3000, 'entry did not exit')
-                    if boot and not sent then
+                    if scale then
+                        if
+                            not sent
+                            and w.produced == scale * 16
+                            and engine
+                            and engine.recovered
+                        then
+                            for _, a in ipairs(engine.arrays) do
+                                if engine.s.arrays[a.address].batch then
+                                    return
+                                end
+                            end
+                            sent = true
+                            return 'quit'
+                        end
+                        return
+                    elseif boot and not sent then
                         assert(not engine.recovered)
                         sent = true
                         return action:sub(6)
@@ -805,6 +847,16 @@ test('real entry preserves Q drain, Ctrl+C pause and pending refill claims', fun
         if check then
             local phrase = action == 'check-pending' and '检查尚未完成' or '检查通过'
             assert(#output == 1 and output[1]:find(phrase, 1, true))
+        elseif scale then
+            assert(#engine.arrays == scale and not engine.s.arrays['a' .. (scale + 1)])
+            assert(#w.cfg.arrays == scale + 1 and w.produced == scale * 16)
+            assert(#errorOutput == 0 and exitWrites == 0 and w.closed and not w.subscribed)
+            print(
+                string.format(
+                    '  PASS %d online arrays: offline array skipped, no duplicate empty polls or node writes on clean Q',
+                    scale
+                )
+            )
         elseif boot then
             assert(w.produced == 1 and w.arrays.a1.bees == 0)
             assert(edits == (action == 'boot-setup' and 1 or 0))

@@ -1266,7 +1266,7 @@ function E:array(a)
                 return
             end
         end
-        local now = self.io.time()
+        local now = not b.fixed and self.io.time()
         local complete
         if b.fixed then
             b.targetTier = b.fixed
@@ -1276,12 +1276,12 @@ function E:array(a)
             local workers = {}
             local views = {}
             for index, w in ipairs(b.workers) do
-                local n = self.io.proxy(w.address)
                 local cached = self:worker(w)
-                if not cached.done and n.hasWork() then
-                    local progress = n.getWorkProgress()
-                    local tier = self.N.requested(meta.steps, progress)
-                    if n.hasWork() then
+                if not cached.done then
+                    local n = self.io.proxy(w.address)
+                    local progress = n.hasWork() and n.getWorkProgress()
+                    if progress and n.hasWork() then
+                        local tier = self.N.requested(meta.steps, progress)
                         workers[#workers + 1] =
                             { progress = progress, tier = tier, address = w.address }
                         views[index] = {
@@ -1294,8 +1294,6 @@ function E:array(a)
                     else
                         cached.done = true
                     end
-                else
-                    cached.done = true
                 end
             end
             self.observations[a.address] = views
@@ -1344,6 +1342,11 @@ function E:drain()
     end
     for _, a in ipairs(self.arrays) do
         if self.s.arrays[a.address].batch then
+            return false
+        end
+    end
+    for _, feed in pairs(self.s.refill.feeds) do
+        if feed.loading then
             return false
         end
     end

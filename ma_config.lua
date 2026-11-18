@@ -55,7 +55,7 @@ C.schema = {
         list('cells', '蜂群元件', {
             num('tier', '等级', 1, 1, 10),
             num('box', '箱子编号', 1, 1),
-            num('slot', '箱内固定槽位', 1, 1),
+            num('slot', '末影箱槽位（1–27）', 1, 1, 27),
         }),
     }),
     list('arrays', '观测阵列', {
@@ -133,10 +133,13 @@ function C.defaults(cfg)
     return cfg
 end
 
+local nativeKinds =
+    { bec_io_node = true, bec_storage = true, bec_diode = true, transposer = true, redstone = true }
+
 function C.scan(component, cfg)
     local devices = {}
     for a, k in component.list() do
-        local d = { address = a, kind = k, methods = component.methods(a) }
+        local d = { address = a, kind = k, methods = nativeKinds[k] and {} or component.methods(a) }
         if d.methods.getName then
             local ok, n = pcall(component.invoke, a, 'getName')
             if ok then
@@ -231,6 +234,21 @@ function C.unboundDoors(cfg, devices)
     return doors
 end
 
+function C.connectedArrays(cfg, component, kinds)
+    local arrays = {}
+    for _, a in ipairs(cfg.arrays) do
+        if a.enabled then
+            if component and kinds[a.address] == nil then
+                kinds[a.address] = component.type(a.address) or false
+            end
+            if not component or kinds[a.address] then
+                arrays[#arrays + 1] = a
+            end
+        end
+    end
+    return arrays
+end
+
 function C.validate(cfg, component, U, progress)
     if progress then
         progress('校验配置', '检查设备绑定和元件位置')
@@ -253,26 +271,44 @@ function C.validate(cfg, component, U, progress)
             end
         end
     end
-    -- Disabled newly discovered arrays may remain unconfigured.
     local checked = {}
     for key, value in pairs(cfg) do
         checked[key] = value
     end
-    checked.arrays = {}
-    for _, a in ipairs(cfg.arrays) do
-        if a.enabled then
-            checked.arrays[#checked.arrays + 1] = a
+    local kinds = {}
+    checked.arrays = C.connectedArrays(cfg, component, kinds)
+    assert(#checked.arrays > 0, '请连接并启用至少一台观测阵列')
+    local inventoryIds, poolIds = {}, {}
+    for _, a in ipairs(checked.arrays) do
+        poolIds[a.beePool] = true
+        inventoryIds[a.loadPort], inventoryIds[a.unloadPort] = true, true
+        for _, b in ipairs(a.beeBoxes) do
+            inventoryIds[b.inventory] = true
         end
     end
+    for _, f in ipairs(cfg.feeds) do
+        inventoryIds[f.io] = true
+        for _, c in ipairs(f.cells) do
+            inventoryIds[c.inventory] = true
+        end
+    end
+    local function referenced(list, ids)
+        local result = {}
+        for _, value in ipairs(list) do
+            if ids[value.id] then
+                result[#result + 1] = value
+            end
+        end
+        return result
+    end
+    checked.inventories = referenced(cfg.inventories, inventoryIds)
+    checked.beePools = referenced(cfg.beePools, poolIds)
     basic(C.schema, checked, '')
-    assert(
-        #checked.arrays > 0 and #cfg.channels == 1,
-        '至少启用一台阵列，并配置唯一的公共原料子网'
-    )
-    local inv, feeds = U.index(cfg.inventories), U.index(cfg.feeds)
+    assert(#cfg.channels == 1, '请配置唯一的公共原料子网')
+    local inv, feeds = U.index(checked.inventories), U.index(cfg.feeds)
     for _, section in ipairs({ 'inventories', 'channels', 'feeds', 'beePools' }) do
         local seen = {}
-        for _, x in ipairs(cfg[section]) do
+        for _, x in ipairs(checked[section]) do
             assert(not seen[x.id], '重复名称：' .. x.id)
             seen[x.id] = true
         end
@@ -301,9 +337,9 @@ function C.validate(cfg, component, U, progress)
         )
         assert(a.side ~= b.side, '元件容器和 ME-IO 端口不能使用同一方向')
     end
-    local pools = U.index(cfg.beePools)
+    local pools = U.index(checked.beePools)
     local boxPools = {}
-    for _, p in ipairs(cfg.beePools) do
+    for _, p in ipairs(checked.beePools) do
         assert(#p.cells > 0, '蜂群池未登记蜂群元件：' .. p.id)
         local slots = {}
         for _, c in ipairs(p.cells) do
@@ -341,20 +377,22 @@ function C.validate(cfg, component, U, progress)
                 '阵列的蜂群箱编号重复：' .. a.address .. ' / ' .. box.box
             )
             boxes[box.box] = true
-            assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
+            local container =
+                assert(inv[box.inventory], '未配置蜂群箱连接：' .. box.inventory)
+            local face = container.transposer .. ':' .. container.side
             local key = a.beePool .. ':' .. box.box
             assert(
-                not boxPools[box.inventory] or boxPools[box.inventory] == key,
-                '同一蜂群箱不能登记为不同的池或箱子编号'
+                not boxPools[face] or boxPools[face] == key,
+                '不同蜂群箱不能使用同一转运器的同一方向：' .. face
             )
             for _, c in ipairs(pool.cells) do
                 if c.box == box.box then
-                    if not boxPools[box.inventory] then
+                    if not boxPools[face] then
                         own(box.inventory, c.slot)
                     end
                 end
             end
-            boxPools[box.inventory] = key
+            boxPools[face] = key
             connected(box.inventory, a.loadPort)
             connected(box.inventory, a.unloadPort)
         end
@@ -431,7 +469,7 @@ function C.validate(cfg, component, U, progress)
                         end
                         d = {
                             kind = assert(
-                                component.type(a),
+                                kinds[a] or component.type(a),
                                 '组件离线：' .. f.label .. ' ' .. a
                             ),
                         }
@@ -453,6 +491,6 @@ function C.validate(cfg, component, U, progress)
             progress('检查设备连接', '设备连接检查完成', count, count)
         end
     end
-    return true
+    return true, checked, kinds
 end
 return C

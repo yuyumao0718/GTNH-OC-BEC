@@ -159,8 +159,8 @@ for _, saveConfig in ipairs({ false, true }) do
             assert(not next(files['multi.state'].patterns))
             if saveConfig then
                 cfg.singularityWait = 600
-                configModule.validate(cfg)
-                callbacks.write(cfg)
+                local _, checked, kinds = configModule.validate(cfg)
+                callbacks.write(cfg, checked, kinds)
             end
             return saveConfig
         end,
@@ -230,8 +230,9 @@ for _, saveConfig in ipairs({ false, true }) do
         if name == 'ma_config.lua' then
             local config = oldDofile(path)
             configModule = config
-            config.validate = function()
+            config.validate = function(cfg)
                 configurationChecks = (configurationChecks or 0) + 1
+                return true, cfg, {}
             end
             return config
         end

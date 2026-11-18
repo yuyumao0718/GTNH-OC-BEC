@@ -65,7 +65,11 @@ function R.check(cfg, old, U, proxy)
                 return false
             end
         end
-        local oldCells, newCells = oldPools[a.beePool].cells, newPools[b.beePool].cells
+        local oldPool = oldPools[a.beePool]
+        if not oldPool then
+            return false
+        end
+        local oldCells, newCells = oldPool.cells, newPools[b.beePool].cells
         if U.equal(oldCells, newCells) then
             return true
         end
@@ -92,7 +96,7 @@ function R.check(cfg, old, U, proxy)
             end
             for _, id in ipairs({ a.loadPort, a.unloadPort }) do
                 local port = oldInv[id]
-                local mover = proxy(port.transposer)
+                local mover = port and proxy(port.transposer)
                 assert(
                     not mover
                         or not (

@@ -22,6 +22,25 @@ do
 end
 print('  PASS confirmed idle arrays do not repeat stop checks')
 
+do
+    local w = make(1, 0)
+    for _ = 1, 20 do
+        w.tick()
+    end
+    w.e:requestStop()
+    local reads = 0
+    local receiver = w.components.receiver
+    local items = receiver.getItemsInNetwork
+    receiver.getItemsInNetwork = function()
+        reads = reads + 1
+        return items()
+    end
+    w.state.refill.feeds.test = { loading = { index = 1 } }
+    assert(not w.e:drain() and reads == 0)
+    w.state.refill.feeds.test.loading = nil
+    assert(w.e:drain() and reads == 1)
+end
+
 local function watch(p, names)
     local calls = {}
     for _, name in ipairs(names) do
@@ -176,6 +195,54 @@ end
 print(
     '  PASS completion at either hasWork check suppresses further reads only for this runtime batch'
 )
+
+for _, count in ipairs({ 6, 10, 30 }) do
+    local w = make(count, count * 16, { nodes = 16, stageTicks = 2000 })
+    w.stock.entangled_neutronium = 1e8
+    w.cfg.fieldLimit = 1e9
+    w.boot()
+    for _ = 1, 1500 do
+        w.tick()
+        local ready = 0
+        for _, a in ipairs(w.e.arrays) do
+            local b = w.state.arrays[a.address].batch
+            if b and b.phase == 'run' and w.arrays[a.address].enabled then
+                ready = ready + 1
+            end
+        end
+        if ready == count then
+            break
+        end
+    end
+    for _, a in ipairs(w.e.arrays) do
+        local b = w.state.arrays[a.address].batch
+        assert(b and b.phase == 'run' and not b.fixed and #b.workers == 16)
+        for i = 2, 16 do
+            w.nodes[b.workers[i].address].active = false
+        end
+        b.nextScan = nil
+        w.e:array(a)
+        b.nextScan = nil
+    end
+    local lookups, proxy = 0, w.e.io.proxy
+    w.e.io.proxy = function(address)
+        if w.nodes[address] then
+            lookups = lookups + 1
+        end
+        return proxy(address)
+    end
+    for _, a in ipairs(w.e.arrays) do
+        w.e:array(a)
+    end
+    assert(lookups == count)
+    print(
+        string.format(
+            '  PASS %d arrays with one outstanding node each: %d node proxy lookups',
+            count,
+            lookups
+        )
+    )
+end
 
 do
     local w, a, s = running()
